@@ -1,0 +1,40 @@
+{
+  "name": "@fractaal/pi-fractal-compact",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Ben/Fractal high-fidelity compaction extension for Pi.",
+  "keywords": ["pi-package", "pi-extension", "compact", "fractal"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/fractal-compact"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

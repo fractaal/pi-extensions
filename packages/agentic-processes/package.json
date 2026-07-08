@@ -1,0 +1,40 @@
+{
+  "name": "@fractaal/pi-agentic-processes",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Agentic process lifecycle tools for Pi: background bash tasks, sparse monitors, and headless management APIs.",
+  "keywords": ["pi-package", "pi-extension", "bash", "monitor", "agentic"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/agentic-processes"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  }
+}

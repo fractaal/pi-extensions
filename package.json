@@ -1,0 +1,20 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "type": "module",
+  "description": "fractaal Pi extension monorepo: agentic QoL extensions published under @fractaal.",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "npm run build --workspaces"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.80.2",
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.80.2-fractal",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/node": "22.19.19",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
+}
