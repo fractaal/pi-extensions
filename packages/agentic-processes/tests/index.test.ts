@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { createExtensionApiMock, type ExtensionApiMock } from "../../../tests/mo
 import { createBashTaskManager } from "../src/bash-backgrounding.ts";
 import agenticProcessesExtension, { bashBackgroundingExtension, monitorExtension } from "../src/index.ts";
 import { createMonitorManager } from "../src/monitor.ts";
+import { killChildProcessTree, killProcessTree, resolveBashShell, windowsBashCandidates } from "../src/shell.ts";
 
 type TextToolResult = {
 	content: Array<{ type: "text"; text: string }>;
@@ -70,6 +72,97 @@ function monitorIdFrom(result: unknown): string {
 	if (!monitorId) throw new Error(`No monitor id in result:\n${text(result)}`);
 	return monitorId;
 }
+
+describe("shell resolution and process termination", () => {
+	function existsOnly(paths: string[]) {
+		const existing = new Set(paths);
+		return (candidate: string) => existing.has(candidate);
+	}
+
+	it("resolves an explicit Windows Bash override", () => {
+		const bashPath = String.raw`C:\Custom\Git\bin\bash.exe`;
+		expect(
+			resolveBashShell({
+				platform: "win32",
+				env: { ARIA_LOCAL_BASH_PATH: bashPath },
+				existsSync: existsOnly([bashPath]),
+			}),
+		).toEqual({ command: bashPath, args: ["-lc"] });
+	});
+
+	it("uses Windows PATH entries with the Windows delimiter", () => {
+		const bashPath = String.raw`C:\Tools\Git\bin\bash.exe`;
+		expect(
+			resolveBashShell({
+				platform: "win32",
+				env: { Path: String.raw`C:\Other;C:\Tools\Git\bin` },
+				existsSync: existsOnly([bashPath]),
+			}),
+		).toEqual({ command: bashPath, args: ["-lc"] });
+	});
+
+	it("falls back to Git Bash's default Program Files locations on Windows", () => {
+		const candidates = windowsBashCandidates({ ProgramFiles: String.raw`C:\Program Files`, PATH: "" });
+		const bashPath = String.raw`C:\Program Files\Git\usr\bin\bash.exe`;
+		expect(candidates).toContain(bashPath);
+		expect(
+			resolveBashShell({
+				platform: "win32",
+				env: { ProgramFiles: String.raw`C:\Program Files`, PATH: "" },
+				existsSync: existsOnly([bashPath]),
+			}),
+		).toEqual({ command: bashPath, args: ["-lc"] });
+	});
+
+	it("fails with an actionable Windows Bash setup message when no Bash is available", () => {
+		expect(() =>
+			resolveBashShell({
+				platform: "win32",
+				env: { PATH: "" },
+				existsSync: () => false,
+			}),
+		).toThrow(/Install Git for Windows/);
+	});
+
+	it("keeps POSIX Bash behavior on non-Windows platforms", () => {
+		expect(
+			resolveBashShell({
+				platform: "linux",
+				env: {},
+				existsSync: existsOnly(["/bin/bash"]),
+			}),
+		).toEqual({ command: "/bin/bash", args: ["-lc"] });
+	});
+
+	it("uses taskkill for Windows process-tree termination", () => {
+		const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+		const fakeSpawn = ((command: string, args: string[], options: unknown) => {
+			calls.push({ command, args, options });
+			return new EventEmitter();
+		}) as never;
+
+		killProcessTree(1234, "SIGKILL", { platform: "win32", spawn: fakeSpawn });
+
+		expect(calls).toEqual([
+			{
+				command: "taskkill",
+				args: ["/PID", "1234", "/T", "/F"],
+				options: { stdio: "ignore", windowsHide: true },
+			},
+		]);
+	});
+
+	it("falls back to ChildProcess.kill if Windows taskkill cannot start", () => {
+		const killer = new EventEmitter();
+		const fakeSpawn = (() => killer) as never;
+		const child = { pid: 4321, kill: vi.fn() };
+
+		killChildProcessTree(child, "SIGTERM", { platform: "win32", spawn: fakeSpawn });
+		killer.emit("error", new Error("taskkill missing"));
+
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+	});
+});
 
 describe("agentic processes extension", () => {
 	it("registers the background bash and monitor tool surfaces", () => {

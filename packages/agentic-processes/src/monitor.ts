@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { killProcessTree, resolveBashShell } from "./shell.ts";
 
 const DEFAULT_BATCH_MS = 1000;
 const DEFAULT_MAX_LINES_PER_MESSAGE = 20;
@@ -586,7 +587,7 @@ function stopMonitor(pi: ExtensionAPI, monitor: Monitor, signal: NodeJS.Signals 
 		return;
 	}
 	try {
-		process.kill(-monitor.process.pid, signal as NodeJS.Signals);
+		killProcessTree(monitor.process.pid, signal as NodeJS.Signals);
 		enqueueLine(pi, monitor, "monitor", `sent ${signal}`);
 	} catch (error) {
 		enqueueLine(
@@ -753,7 +754,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			if (monitor.status === "running") {
 				monitor.stopRequested = true;
 				try {
-					if (monitor.process.pid) process.kill(-monitor.process.pid, "SIGTERM");
+					if (monitor.process.pid) killProcessTree(monitor.process.pid, "SIGTERM");
 				} catch {
 					// Process group may already be gone.
 				}
@@ -768,7 +769,8 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			const id = randomUUID().slice(0, 8);
 			const cwd = resolveCwd(baseCwd, params.cwd);
 			const logs = createMonitorLogFiles(id);
-			const child = spawn("/bin/bash", ["-lc", String(params.command)], {
+			const shell = resolveBashShell();
+			const child = spawn(shell.command, [...shell.args, String(params.command)], {
 				cwd,
 				detached: true,
 				env: process.env,
@@ -1014,7 +1016,9 @@ export default function monitorExtension(pi: ExtensionAPI) {
 		],
 		parameters: objectSchema(
 			{
-				command: stringSchema("Shell command to run via /bin/bash -lc."),
+				command: stringSchema(
+					"Shell command to run via the local Bash-compatible shell. On Windows, Aria Local uses Git Bash or a PI_BASH_PATH / ARIA_LOCAL_BASH_PATH override.",
+				),
 				cwd: stringSchema("Working directory. Relative paths resolve from the current Pi cwd."),
 				name: stringSchema("Human-readable monitor name."),
 				inject: booleanSchema("Whether output should be queued back into the session. Defaults to true."),

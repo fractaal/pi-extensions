@@ -6,6 +6,7 @@ import path from "node:path";
 import type { AgentToolUpdateCallback, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { killChildProcessTree, resolveBashShell } from "./shell.ts";
 
 const FOREGROUND_BUDGET_MS = 60_000;
 const MAX_FOREGROUND_WAIT_SECONDS = FOREGROUND_BUDGET_MS / 1000;
@@ -201,16 +202,7 @@ function scheduleUpdate(
 }
 
 function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGKILL"): void {
-	if (!child.pid) return;
-	try {
-		process.kill(-child.pid, signal);
-	} catch {
-		try {
-			child.kill(signal);
-		} catch {
-			// Already exited.
-		}
-	}
+	killChildProcessTree(child, signal);
 }
 
 function requestKill(pi: ExtensionAPI, store: BashTaskStore, task: TaskRecord, reason: string): void {
@@ -314,7 +306,8 @@ async function spawnTask(
 		resolveCompletion = resolve;
 	});
 	const wrappedCommand = `__pi_backgrounding_run() {\n${command}\n}\n__pi_backgrounding_run\n__pi_backgrounding_status=$?\nwait\nexit $__pi_backgrounding_status`;
-	const child = spawn("/bin/bash", ["-lc", wrappedCommand], {
+	const shell = resolveBashShell();
+	const child = spawn(shell.command, [...shell.args, wrappedCommand], {
 		cwd,
 		detached: true,
 		env: process.env,
