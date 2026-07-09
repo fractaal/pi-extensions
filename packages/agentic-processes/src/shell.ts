@@ -34,7 +34,7 @@ export function resolveBashShell(options: ShellResolutionOptions = {}): BashShel
 	}
 
 	if (platform !== "win32") {
-		for (const candidate of ["/bin/bash", "/usr/bin/bash", "/bin/sh"]) {
+		for (const candidate of ["/bin/bash", "/usr/bin/bash"]) {
 			if (existsSync(candidate)) return { command: candidate, args: ["-lc"] };
 		}
 		return { command: "bash", args: ["-lc"] };

@@ -134,6 +134,16 @@ describe("shell resolution and process termination", () => {
 		).toEqual({ command: "/bin/bash", args: ["-lc"] });
 	});
 
+	it("preserves the Bash contract instead of falling back to POSIX sh", () => {
+		expect(
+			resolveBashShell({
+				platform: "linux",
+				env: { PATH: "/usr/local/bin:/usr/bin" },
+				existsSync: existsOnly(["/bin/sh"]),
+			}),
+		).toEqual({ command: "bash", args: ["-lc"] });
+	});
+
 	it("uses taskkill for Windows process-tree termination", () => {
 		const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
 		const fakeSpawn = ((command: string, args: string[], options: unknown) => {
