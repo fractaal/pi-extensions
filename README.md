@@ -9,6 +9,7 @@ fractaal's Pi extension monorepo — agentic QoL extensions published to npm und
 | [`@fractaal/pi-agentic-processes`](packages/agentic-processes) | Background bash tasks, sparse monitors, and headless management APIs (`bash-backgrounding` + `monitor` extensions). |
 | [`@fractaal/pi-fractal-compact`](packages/fractal-compact) | High-fidelity compaction extension. |
 | [`@fractaal/pi-codex-usage-info`](packages/codex-usage-info) | Codex/OpenAI usage statusline extension. |
+| [`@fractaal/pi-directive-roots`](packages/directive-roots) | Directive-root loading and mid-turn discovery for `CLAUDE.md`, `AGENTS.md`, `MEMORY.md`, and shared skill directories. |
 
 ## Consumption
 

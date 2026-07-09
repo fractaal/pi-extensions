@@ -1,0 +1,51 @@
+{
+  "name": "@fractaal/pi-directive-roots",
+  "version": "0.1.0",
+  "description": "Directive-root loading and mid-turn discovery for Pi across CLAUDE.md, AGENTS.md, MEMORY.md, and shared skill directories.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "directive-roots",
+    "agents",
+    "skills"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/directive-roots"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  }
+}
