@@ -5,8 +5,8 @@
   "description": "fractaal Pi extension monorepo: agentic QoL extensions published under @fractaal.",
   "workspaces": ["packages/*"],
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @fractaal/pi-claude-bridge",
+    "test": "vitest run && npm test --workspace @fractaal/pi-claude-bridge",
     "build": "npm run build --workspaces"
   },
   "devDependencies": {

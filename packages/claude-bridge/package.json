@@ -1,0 +1,221 @@
+{
+  "name": "@fractaal/pi-claude-bridge",
+  "version": "1.6.2-fractal.1",
+  "description": "Pi provider bridge that runs Claude Code through the Claude Agent SDK.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "claude-code",
+    "claude-agent-sdk"
+  ],
+  "license": "MIT",
+  "main": "./bundle/index.js",
+  "exports": {
+    ".": "./bundle/index.js",
+    "./isolated": "./bundle/isolated.js",
+    "./bundle/index.js": "./bundle/index.js"
+  },
+  "pi": {
+    "extensions": [
+      "./bundle/index.js"
+    ],
+    "image": "https://raw.githubusercontent.com/fractaal/pi-extensions/main/packages/claude-bridge/assets/bridge-demo.png"
+  },
+  "vstack": {
+    "extensionManager": {
+      "displayName": "Claude Bridge",
+      "settings": [
+        {
+          "key": "enabled",
+          "label": "Enable Claude bridge provider",
+          "description": "Register claude-bridge models that route Pi turns through Claude Code via the Claude Agent SDK.",
+          "type": "boolean",
+          "default": true,
+          "category": "General",
+          "apply": "reload",
+          "requiresReload": true
+        },
+        {
+          "key": "systemPromptMode",
+          "label": "System prompt",
+          "description": "Use Claude Code's preset prompt or pass Pi's complete system prompt through unchanged.",
+          "type": "enum",
+          "enumValues": [
+            "claude-code",
+            "pi"
+          ],
+          "default": "claude-code",
+          "category": "Base Prompt",
+          "apply": "live"
+        },
+        {
+          "key": "appendSystemPrompt",
+          "label": "Forward AGENTS.md + skills",
+          "description": "In Claude Code prompt mode, append AGENTS.md and Pi's skills block to Claude Code's preset prompt.",
+          "type": "boolean",
+          "default": true,
+          "category": "Base Prompt",
+          "apply": "live"
+        },
+        {
+          "key": "includeAppendSystemPromptMd",
+          "label": "Forward APPEND_SYSTEM.md",
+          "description": "Opt in to forwarding project/global APPEND_SYSTEM.md content to Claude Code. Off by default because these files can be Pi-specific.",
+          "type": "boolean",
+          "default": false,
+          "category": "Pi Prompt Context",
+          "apply": "live"
+        },
+        {
+          "key": "includeProjectAgentsHook",
+          "label": "Forward project agents hook",
+          "description": "Forward recognized pi-agents-tmux before_agent_start prompt additions such as the Project Agents/Subagents list. Off by default.",
+          "type": "boolean",
+          "default": false,
+          "category": "Pi Prompt Hooks",
+          "apply": "live"
+        },
+        {
+          "key": "includeTaskPanelHook",
+          "label": "Forward task panel hook",
+          "description": "Forward recognized pi-task-panel workflow reminders from before_agent_start. Off by default.",
+          "type": "boolean",
+          "default": false,
+          "category": "Pi Prompt Hooks",
+          "apply": "live"
+        },
+        {
+          "key": "includeCavemanHook",
+          "label": "Forward caveman hook",
+          "description": "Forward recognized pi-caveman response-style prompt additions from before_agent_start. Off by default.",
+          "type": "boolean",
+          "default": false,
+          "category": "Pi Prompt Hooks",
+          "apply": "live"
+        },
+        {
+          "key": "strictMcpConfig",
+          "label": "Strict MCP config",
+          "description": "When Claude Code filesystem settings are loaded, tell Claude Code to use only MCP servers passed by the bridge, avoiding token-heavy MCP auto-loads.",
+          "type": "boolean",
+          "default": true,
+          "category": "Claude Code",
+          "apply": "live"
+        },
+        {
+          "key": "allowExtraUsage",
+          "label": "Allow extra usage helper",
+          "description": "Allow claude-bridge to launch Claude Code's /extra-usage flow when rate limits require extra usage. Billing/admin approval still happens in Claude's browser page.",
+          "type": "boolean",
+          "default": false,
+          "category": "Claude Code",
+          "apply": "live"
+        },
+        {
+          "key": "fastMode",
+          "label": "Fast mode",
+          "description": "Enable Claude Code fast mode for bridge requests when the selected model supports it. Off by default.",
+          "type": "boolean",
+          "default": false,
+          "category": "Claude Code",
+          "apply": "live"
+        },
+        {
+          "key": "forceEffort",
+          "label": "Force Claude effort",
+          "description": "Override Pi's thinking-level mapping for every bridge request. Pi 0.80.6 and newer can select max natively; none keeps Pi's selected level.",
+          "type": "enum",
+          "enumValues": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "default": "none",
+          "category": "Claude Code",
+          "apply": "live"
+        },
+        {
+          "key": "modelEffortOverrides",
+          "label": "Model effort overrides",
+          "description": "Optional JSON object mapping claude-bridge model ids to Claude Code effort levels.",
+          "type": "string",
+          "default": "{}",
+          "category": "Claude Code",
+          "apply": "live"
+        },
+        {
+          "key": "pathToClaudeCodeExecutable",
+          "label": "Claude executable path",
+          "description": "Optional explicit path to the claude binary. If empty, the bridge auto-detects claude or claude-code on PATH.",
+          "type": "path",
+          "default": "",
+          "category": "Claude Code",
+          "apply": "live"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.158",
+    "@anthropic-ai/sdk": "0.93.0",
+    "cc-session-io": "^0.3.1",
+    "change-case": "^5.4.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.80.2",
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.80.2-fractal",
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/index.js --define:CLAUDE_BRIDGE_ISOLATED=false --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/isolated.js --define:CLAUDE_BRIDGE_ISOLATED=true --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent",
+    "prepack": "npm run build",
+    "pretest": "npm run build",
+    "test": "npm run test:unit",
+    "test:unit": "node --import tsx --test tests/unit-*.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "bundle/",
+    "src/",
+    "assets/",
+    "LICENSE",
+    "README.md",
+    "package.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/claude-bridge"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/claude-bridge",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "author": "vanillagreen, maintained by fractaal",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
