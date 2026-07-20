@@ -237,8 +237,8 @@ describe("agentic processes extension", () => {
 		const management = requestAgenticProcessManagementApi(events);
 		if (!management) throw new Error("agentic process management API missing");
 		const subscriberError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-		management.subscribe(() => {
-			throw new Error("broken management observer");
+		management.subscribe(async () => {
+			throw new Error("broken async management observer");
 		});
 		const updates: string[] = [];
 		management.subscribe((snapshot) => updates.push(`${snapshot.kind}:${snapshot.id}:${snapshot.status}`));
@@ -287,10 +287,12 @@ describe("agentic processes extension", () => {
 		expect(updates).toContain(`bash:${bashId}:killed`);
 		expect(updates).toContain(`monitor:${monitorId}:running`);
 		expect(updates).toContain(`monitor:${monitorId}:killed`);
-		expect(subscriberError).toHaveBeenCalledWith(
-			"[pi-agentic-processes] management API subscriber failed",
-			expect.any(Error),
-		);
+		await vi.waitFor(() => {
+			expect(subscriberError).toHaveBeenCalledWith(
+				"[pi-agentic-processes] management API subscriber failed",
+				expect.objectContaining({ message: "broken async management observer" }),
+			);
+		});
 		await expect(management.stop(bashId)).rejects.toThrow("already killed");
 
 		for (const handler of apiMock.getHandlers("session_shutdown")) await handler({}, ctx(cwd));
@@ -344,6 +346,9 @@ describe("agentic processes extension", () => {
 		manager.subscribe(() => {
 			throw new Error("broken Bash observer");
 		});
+		manager.subscribe(async () => {
+			throw new Error("broken async Bash observer");
+		});
 		const updates: string[] = [];
 		manager.subscribe((snapshot) => updates.push(snapshot.status));
 
@@ -357,10 +362,12 @@ describe("agentic processes extension", () => {
 		expect(manager.get(task.taskId)?.status).toBe("completed");
 		expect(updates).toContain("running");
 		expect(updates).toContain("completed");
-		expect(subscriberError).toHaveBeenCalledWith(
-			"[pi-agentic-processes] Bash task subscriber failed",
-			expect.any(Error),
-		);
+		await vi.waitFor(() => {
+			expect(subscriberError).toHaveBeenCalledWith(
+				"[pi-agentic-processes] Bash task subscriber failed",
+				expect.objectContaining({ message: "broken async Bash observer" }),
+			);
+		});
 	});
 
 	it("reports real Bash output availability and stable terminal timestamps", async () => {
@@ -624,6 +631,24 @@ describe("agentic processes extension", () => {
 		},
 	);
 
+	it.skipIf(process.platform === "win32")(
+		"reuses a pending monitor stop dispatch during shutdown",
+		async () => {
+			const cwd = await tempCwd();
+			const apiMock = createExtensionApiMock();
+			const manager = createMonitorManager(apiMock.api);
+			const started = await manager.start({ command: "sleep 30", inject: false, name: "shutdown-race" }, cwd);
+			const monitorId = monitorIdFrom(started);
+			const kill = vi.spyOn(process, "kill");
+
+			const stopping = manager.stop({ id: monitorId, reason: "normal stop" });
+			manager.shutdown();
+			await stopping;
+
+			expect(kill).toHaveBeenCalledTimes(1);
+		},
+	);
+
 	it("isolates throwing monitor subscribers from process lifecycle and other observers", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
@@ -631,6 +656,9 @@ describe("agentic processes extension", () => {
 		const subscriberError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		manager.subscribe(() => {
 			throw new Error("broken monitor observer");
+		});
+		manager.subscribe(async () => {
+			throw new Error("broken async monitor observer");
 		});
 		const updates: string[] = [];
 		manager.subscribe((snapshot) => updates.push(snapshot.liveTaskStatus));
@@ -642,10 +670,12 @@ describe("agentic processes extension", () => {
 		expect(updates).toContain("running");
 		expect(updates).toContain("completed");
 		expect((await manager.readOutput(monitorId, 4096)).output).toContain("observer-safe");
-		expect(subscriberError).toHaveBeenCalledWith(
-			"[pi-agentic-processes] monitor subscriber failed",
-			expect.any(Error),
-		);
+		await vi.waitFor(() => {
+			expect(subscriberError).toHaveBeenCalledWith(
+				"[pi-agentic-processes] monitor subscriber failed",
+				expect.objectContaining({ message: "broken async monitor observer" }),
+			);
+		});
 		manager.shutdown();
 	});
 

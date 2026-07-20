@@ -43,7 +43,7 @@ export interface AgenticProcessManagementApi {
 	list(): AgenticProcessSnapshot[];
 	readOutput(id: string, tailBytes?: number): Promise<AgenticProcessOutput>;
 	stop(id: string, reason?: string): Promise<void>;
-	subscribe(listener: (snapshot: AgenticProcessSnapshot) => void): () => void;
+	subscribe(listener: (snapshot: AgenticProcessSnapshot) => void | Promise<void>): () => void;
 }
 
 interface AgenticProcessEventBus {
@@ -115,7 +115,7 @@ function createManagementApi(
 	bash: BashTaskManager,
 	monitors: MonitorManager,
 ): { api: AgenticProcessManagementApi; dispose(): void } {
-	const listeners = new Set<(snapshot: AgenticProcessSnapshot) => void>();
+	const listeners = new Set<(snapshot: AgenticProcessSnapshot) => void | Promise<void>>();
 	let available = true;
 
 	const publish = (snapshot: AgenticProcessSnapshot) => {

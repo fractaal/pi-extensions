@@ -637,7 +637,7 @@ async function stopMonitor(
 	}
 }
 
-export type MonitorUpdateListener = (snapshot: MonitorSnapshot) => void;
+export type MonitorUpdateListener = (snapshot: MonitorSnapshot) => void | Promise<void>;
 
 export interface MonitorSnapshot {
 	id: string;
@@ -794,7 +794,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			monitor.stderrReader?.close();
 			writeMonitorMetadata(monitor);
 			closeMonitorLogFiles(monitor);
-			if (monitor.status === "running" && monitor.process.pid) {
+			if (monitor.status === "running" && monitor.process.pid && !monitor.stopRequested && !monitor.stopDispatch) {
 				const dispatch = killProcessTree(monitor.process.pid, "SIGTERM")
 					.then(() => {
 						monitor.stopRequested = true;

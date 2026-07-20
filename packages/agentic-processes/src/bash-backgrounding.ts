@@ -84,7 +84,7 @@ export interface BashTaskSnapshot {
 	outputTail: string;
 }
 
-export type BashTaskUpdateListener = (snapshot: BashTaskSnapshot) => void;
+export type BashTaskUpdateListener = (snapshot: BashTaskSnapshot) => void | Promise<void>;
 
 interface TaskCompletion {
 	taskId: string;
