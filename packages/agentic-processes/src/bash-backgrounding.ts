@@ -19,7 +19,7 @@ const UPDATE_THROTTLE_MS = 150;
 const MAX_COMPLETED_TASKS = 100;
 // Background task completion should be pushed back into the session by default.
 // Set PI_BASH_BACKGROUND_NOTIFY=0 only when deliberately disabling that behavior.
-const COMPLETION_FOLLOW_UP_ENABLED = process.env.PI_BASH_BACKGROUND_NOTIFY !== "0";
+const COMPLETION_NOTIFICATION_ENABLED = process.env.PI_BASH_BACKGROUND_NOTIFY !== "0";
 
 const bashParams = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
@@ -249,7 +249,7 @@ function finishTask(
 		};
 		task.resolveCompletion(completion);
 		emitBashTaskUpdate(store, task);
-		if (task.notifyOnCompletion && COMPLETION_FOLLOW_UP_ENABLED) {
+		if (task.notifyOnCompletion && COMPLETION_NOTIFICATION_ENABLED) {
 			queueCompletionMessage(pi, completion);
 		}
 		pruneCompletedTasks(store);
@@ -280,7 +280,7 @@ function queueCompletionMessage(pi: ExtensionAPI, completion: TaskCompletion): v
 				display: true,
 				details: completion,
 			},
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		);
 	} catch {
 		// Completion notifications are best-effort; bash_output can still inspect state.
@@ -716,7 +716,7 @@ export default function bashBackgrounding(pi: ExtensionAPI) {
 			"Execute a bash command. Long-running commands auto-background after at most 1 minute and return a task id. Commands have no default kill deadline; use kill_after_seconds only when you intentionally want a hard deadline. Use bash_output to inspect progress, bash_tasks to discover live tasks, and kill_bash to stop a task.",
 		promptSnippet: "Execute bash commands; long-running commands auto-background after at most 1 minute",
 		promptGuidelines: [
-			"Use bash for ordinary shell commands. If bash returns a task_id, Pi will send a follow-up session message when the task completes; use bash_output to inspect progress before then or kill_bash to stop it.",
+			"Use bash for ordinary shell commands. If bash returns a task_id, Pi will steer with a completion message at the next safe turn boundary; use bash_output to inspect progress before then or kill_bash to stop it.",
 			"Use background_after_seconds only to control foreground responsiveness; it does not kill the command and cannot exceed 60 seconds.",
 			"Use kill_after_seconds only as an explicit hard kill deadline for commands known to hang. If omitted, no kill deadline is applied. Prefer kill_bash for intentional stops after a task id exists.",
 			"Use bash_tasks to discover live background bash tasks if the original task_id is no longer in context. Bash task tracking is in-memory and scoped to the current Pi process/session.",

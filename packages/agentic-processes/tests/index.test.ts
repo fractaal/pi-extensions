@@ -315,6 +315,31 @@ describe("agentic processes extension", () => {
 		expect(events.emits.some((event) => event.name === "aria-local:background-task-update")).toBe(true);
 	});
 
+	it("steers the active agent as soon as a background bash task completes", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		bashBackgroundingExtension(apiMock.api);
+		const bash = apiMock.getTool("bash").execute;
+		if (!bash) throw new Error("bash execute missing");
+		const sendMessage = vi.spyOn(apiMock.api, "sendMessage");
+
+		await bash(
+			"call-bg-steer",
+			{ command: "sleep 0.05; printf 'done\\n'", run_in_background: true },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+
+		await vi.waitFor(() => {
+			expect(sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "background-bash-task" }),
+				{ triggerTurn: true, deliverAs: "steer" },
+			);
+		});
+	});
+
 	it("exposes a UI-independent monitor manager API", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
