@@ -165,7 +165,7 @@ function createManagementApi(
 					await bash.stop(id, reason);
 					return;
 				}
-				await monitors.stop({ id, reason });
+				await monitors.stop({ id, reason, suppressTerminalInjection: true });
 			},
 			subscribe(listener) {
 				requireAvailable();

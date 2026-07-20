@@ -76,6 +76,7 @@ interface Monitor {
 	deliveryErrors: LineEntry[];
 	recentLineTimes: number[];
 	injectionPaused: boolean;
+	suppressTerminalInjection: boolean;
 	guardrailTriggeredAt?: string;
 	guardrailReason?: string;
 	flushTimer?: NodeJS.Timeout;
@@ -526,10 +527,11 @@ function enqueueLine(pi: ExtensionAPI, monitor: Monitor, stream: MonitorStream, 
 		recordOutputRate(monitor, now);
 	}
 
-	if (monitor.inject && !monitor.injectionPaused) {
+	const terminalInjectionSuppressed = stream === "monitor" && monitor.suppressTerminalInjection;
+	if (monitor.inject && !monitor.injectionPaused && !terminalInjectionSuppressed) {
 		rememberPendingLine(monitor, injectedLine);
 		scheduleFlush(pi, monitor);
-	} else if (monitor.inject && stream === "monitor") {
+	} else if (monitor.inject && stream === "monitor" && !terminalInjectionSuppressed) {
 		sendDeferredMessage(pi, monitor, `[monitor] ${truncated.line}`);
 	}
 
@@ -846,6 +848,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 				deliveryErrors: [],
 				recentLineTimes: [],
 				injectionPaused: false,
+				suppressTerminalInjection: false,
 				flushing: false,
 				inject: params.inject !== false,
 				batchMs: clampNumber(params.batchMs, DEFAULT_BATCH_MS, 0, 60_000),
@@ -1030,9 +1033,12 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 
 			const signal = typeof params.signal === "string" && params.signal ? params.signal : "SIGTERM";
 			const reason = typeof params.reason === "string" && params.reason.trim() ? params.reason.trim() : "stopped by monitor_stop";
+			const suppressTerminalInjection = params.suppressTerminalInjection === true;
+			if (suppressTerminalInjection) monitor.suppressTerminalInjection = true;
 			try {
 				await stopMonitor(pi, monitor, signal, reason);
 			} catch (error) {
+				if (suppressTerminalInjection) monitor.suppressTerminalInjection = false;
 				flushPending(pi, monitor);
 				emitMonitorUpdate(monitor);
 				updateMonitorStatus(statusCtx);

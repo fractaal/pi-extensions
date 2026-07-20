@@ -337,6 +337,35 @@ describe("agentic processes extension", () => {
 		expect(() => management.list()).toThrow("unavailable after Pi session shutdown");
 	});
 
+	it("suppresses monitor terminal injection when the headless manager owns the Stop notification", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const events = installEventBus(apiMock);
+		agenticProcessesExtension(apiMock.api);
+		const management = requestAgenticProcessManagementApi(events);
+		if (!management) throw new Error("agentic process management API missing");
+		const monitorStart = apiMock.getTool("monitor_start").execute;
+		if (!monitorStart) throw new Error("monitor_start tool missing");
+		const startResult = await monitorStart(
+			"start-silent-managed-monitor",
+			{ command: "sleep 30", name: "silent managed monitor", inject: true },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const monitorId = monitorIdFrom(startResult);
+		apiMock.sentMessages.length = 0;
+
+		await management.stop(monitorId, "stopped from Symphony task dock");
+		await vi.waitFor(() => {
+			expect(management.list().find((process) => process.id === monitorId)?.status).toBe("killed");
+		});
+
+		expect(apiMock.sentMessages).toEqual([]);
+		await expect(management.stop(monitorId, "duplicate Stop")).rejects.toThrow("already killed");
+		expect(apiMock.sentMessages).toEqual([]);
+	});
+
 	it("runs a foreground bash command with the compatible output shape", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
