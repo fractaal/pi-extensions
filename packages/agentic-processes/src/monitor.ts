@@ -2,6 +2,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
@@ -93,6 +94,7 @@ interface Monitor {
 	stdoutReader?: ReadlineInterface;
 	stderrReader?: ReadlineInterface;
 	stopRequested: boolean;
+	stopReason?: string;
 	shutdown: boolean;
 }
 
@@ -149,6 +151,22 @@ function truncateUtf8Line(line: string, maxBytes: number): { line: string; trunc
 
 function displayText(text: string, maxBytes = MAX_METADATA_BYTES) {
 	return truncateUtf8Line(text, maxBytes).line;
+}
+
+async function readLogTail(filePath: string, maxBytes: number): Promise<string> {
+	const file = await stat(filePath).catch(() => null);
+	if (!file) return "";
+	const length = Math.min(file.size, maxBytes);
+	const start = Math.max(0, file.size - length);
+	const handle = await open(filePath, "r");
+	try {
+		const buffer = Buffer.alloc(length);
+		await handle.read(buffer, 0, length, start);
+		const output = buffer.toString("utf8").replace(/\r/g, "");
+		return start > 0 ? `[showing last ${length} of ${file.size} bytes]\n${output}` : output;
+	} finally {
+		await handle.close();
+	}
 }
 
 function formatBytes(bytes: number) {
@@ -217,6 +235,7 @@ function monitorMetadata(monitor: Monitor) {
 		logWriteErrorCount: monitor.logWriteErrorCount,
 		firstLogWriteErrorAt: monitor.firstLogWriteErrorAt,
 		lastLogWriteError: monitor.lastLogWriteError,
+		stopReason: monitor.stopReason,
 		logDir: monitor.logDir,
 		combinedLogPath: monitor.combinedLogPath,
 		stdoutLogPath: monitor.stdoutLogPath,
@@ -562,6 +581,7 @@ function summarizeMonitor(monitor: Monitor, tail = 20) {
 		logWriteErrorCount: monitor.logWriteErrorCount,
 		firstLogWriteErrorAt: monitor.firstLogWriteErrorAt,
 		lastLogWriteError: monitor.lastLogWriteError,
+		stopReason: monitor.stopReason,
 		injectionPaused: monitor.injectionPaused,
 		guardrailTriggeredAt: monitor.guardrailTriggeredAt,
 		guardrailReason: monitor.guardrailReason,
@@ -579,9 +599,15 @@ function summarizeMonitor(monitor: Monitor, tail = 20) {
 	};
 }
 
-function stopMonitor(pi: ExtensionAPI, monitor: Monitor, signal: NodeJS.Signals | string = "SIGTERM") {
+function stopMonitor(
+	pi: ExtensionAPI,
+	monitor: Monitor,
+	signal: NodeJS.Signals | string = "SIGTERM",
+	reason = "stopped by monitor_stop",
+) {
 	if (monitor.status !== "running") return;
 	monitor.stopRequested = true;
+	monitor.stopReason = reason;
 	if (!monitor.process.pid) {
 		enqueueLine(pi, monitor, "monitor", `failed to send ${signal}: missing monitor process pid`);
 		return;
@@ -616,6 +642,7 @@ export interface MonitorSnapshot {
 	hasOutput: boolean;
 	hasResult: boolean;
 	exitCode?: number | null;
+	stopReason?: string;
 	outputTail: string;
 	details: ReturnType<typeof summarizeMonitor>;
 }
@@ -630,6 +657,9 @@ export interface MonitorManager {
 		params: Record<string, unknown>,
 		statusCtx?: StatusUiContext,
 	): Promise<{ content: Array<{ type: "text"; text: string }>; details?: unknown }>;
+	get(id: string): MonitorSnapshot | undefined;
+	listSnapshots(): MonitorSnapshot[];
+	readOutput(id: string, tailBytes?: number): Promise<{ snapshot: MonitorSnapshot; output: string }>;
 	list(statusCtx?: StatusUiContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }>;
 	stop(
 		params: Record<string, unknown>,
@@ -641,7 +671,7 @@ export interface MonitorManager {
 }
 
 function monitorSnapshot(monitor: Monitor): MonitorSnapshot {
-	const updatedAt = new Date().toISOString();
+	const updatedAt = monitor.status === "running" ? new Date().toISOString() : monitor.exitedAt ?? new Date().toISOString();
 	const liveTaskStatus =
 		monitor.status === "exited"
 			? "completed"
@@ -666,6 +696,7 @@ function monitorSnapshot(monitor: Monitor): MonitorSnapshot {
 		hasOutput: monitor.lineCount > 0,
 		hasResult: monitor.status !== "running",
 		exitCode: monitor.exitCode,
+		stopReason: monitor.stopReason,
 		outputTail: monitor.lines
 			.slice(-20)
 			.map((entry) => entry.line)
@@ -689,6 +720,7 @@ function publishAriaLocalMonitor(pi: ExtensionAPI, snapshot: MonitorSnapshot): v
 			has_output: snapshot.hasOutput,
 			has_result: snapshot.hasResult,
 			exit_code: snapshot.exitCode,
+			killed_reason: snapshot.stopReason,
 			output_tail: snapshot.outputTail,
 		},
 	});
@@ -924,6 +956,22 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 				details: summarizeMonitor(monitor, 0),
 			};
 		},
+		get(id) {
+			const monitor = monitors.get(id);
+			return monitor ? monitorSnapshot(monitor) : undefined;
+		},
+		listSnapshots() {
+			return [...monitors.values()].map(monitorSnapshot);
+		},
+		async readOutput(id, tailBytes) {
+			const monitor = monitors.get(id);
+			if (!monitor) throw new Error(`Unknown monitor id: ${id}.`);
+			const maxBytes = clampNumber(tailBytes, MAX_STATUS_TAIL_BYTES, 1, 262_144);
+			return {
+				snapshot: monitorSnapshot(monitor),
+				output: await readLogTail(monitor.combinedLogPath, maxBytes),
+			};
+		},
 		async list(statusCtx) {
 			rememberUi(statusCtx);
 			const all = [...monitors.values()];
@@ -965,7 +1013,8 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			}
 
 			const signal = typeof params.signal === "string" && params.signal ? params.signal : "SIGTERM";
-			stopMonitor(pi, monitor, signal);
+			const reason = typeof params.reason === "string" && params.reason.trim() ? params.reason.trim() : "stopped by monitor_stop";
+			stopMonitor(pi, monitor, signal, reason);
 			flushPending(pi, monitor);
 			emitMonitorUpdate(monitor);
 			updateMonitorStatus(statusCtx);
@@ -988,7 +1037,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 	};
 }
 
-export default function monitorExtension(pi: ExtensionAPI) {
+export function registerMonitorExtension(pi: ExtensionAPI): MonitorManager {
 	const manager = createMonitorManager(pi);
 	const unsubscribeAriaLocalUpdates = manager.subscribe((snapshot) => publishAriaLocalMonitor(pi, snapshot));
 
@@ -1091,4 +1140,10 @@ export default function monitorExtension(pi: ExtensionAPI) {
 			return manager.stop(params, ctx);
 		},
 	});
+
+	return manager;
+}
+
+export default function monitorExtension(pi: ExtensionAPI): void {
+	registerMonitorExtension(pi);
 }

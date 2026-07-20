@@ -630,6 +630,8 @@ export interface BashTaskManager {
 	start(options: BashTaskStartOptions): Promise<TaskRecord>;
 	get(taskId: string): TaskRecord | undefined;
 	list(status?: string): TaskRecord[];
+	getSnapshot(taskId: string): BashTaskSnapshot | undefined;
+	listSnapshots(status?: string): BashTaskSnapshot[];
 	readOutput(options: BashTaskReadOptions): Promise<BashTaskReadResult>;
 	stop(taskId: string, reason?: string, waitMs?: number): Promise<TaskRecord>;
 	scheduleUpdate(onUpdate: AgentToolUpdateCallback<{ outputPath: string }> | undefined, task: BashTaskRecord): void;
@@ -640,6 +642,16 @@ export interface BashTaskManager {
 
 export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 	const store = createBashTaskStore();
+	const listTasks = (status?: string) => {
+		let allTasks = [...store.tasks.values()];
+		if (status) allTasks = allTasks.filter((task) => task.status === status);
+		allTasks.sort((a, b) => {
+			if (a.status === "running" && b.status !== "running") return -1;
+			if (a.status !== "running" && b.status === "running") return 1;
+			return b.startedAt - a.startedAt;
+		});
+		return allTasks;
+	};
 	return {
 		start(options) {
 			return spawnTask(
@@ -656,14 +668,14 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 			return store.tasks.get(taskId);
 		},
 		list(status) {
-			let allTasks = [...store.tasks.values()];
-			if (status) allTasks = allTasks.filter((task) => task.status === status);
-			allTasks.sort((a, b) => {
-				if (a.status === "running" && b.status !== "running") return -1;
-				if (a.status !== "running" && b.status === "running") return 1;
-				return b.startedAt - a.startedAt;
-			});
-			return allTasks;
+			return listTasks(status);
+		},
+		getSnapshot(taskId) {
+			const task = store.tasks.get(taskId);
+			return task ? bashTaskSnapshot(task) : undefined;
+		},
+		listSnapshots(status) {
+			return listTasks(status).map(bashTaskSnapshot);
 		},
 		async readOutput(options) {
 			const task = store.tasks.get(options.taskId);
@@ -741,7 +753,7 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 	};
 }
 
-export default function bashBackgrounding(pi: ExtensionAPI) {
+export function registerBashBackgrounding(pi: ExtensionAPI): BashTaskManager {
 	const manager = createBashTaskManager(pi);
 	const unsubscribeAriaLocalUpdates = manager.subscribe((snapshot) => publishAriaLocalBackgroundTask(pi, snapshot));
 
@@ -883,4 +895,10 @@ export default function bashBackgrounding(pi: ExtensionAPI) {
 		unsubscribeAriaLocalUpdates();
 		await manager.shutdown();
 	});
+
+	return manager;
+}
+
+export default function bashBackgrounding(pi: ExtensionAPI): void {
+	registerBashBackgrounding(pi);
 }

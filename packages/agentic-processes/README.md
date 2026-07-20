@@ -19,5 +19,22 @@ Registered tools:
 - `monitor_stop`
 
 Current behavior is intentionally parity-first: process execution, output logs,
-foreground/background timing, monitor guardrails, and stop semantics should stay
+foreground/background timing, monitor guardrails, and stop semantics stay
 compatible with the original personal Pi hooks.
+
+## Headless management API
+
+Consumers running in the same Pi process can request the session-scoped API from
+Pi's shared extension event bus:
+
+```ts
+import { requestAgenticProcessManagementApi } from "@fractaal/pi-agentic-processes";
+
+const processes = requestAgenticProcessManagementApi(pi.events);
+```
+
+The API exposes `list()`, `readOutput(id, tailBytes?)`, `stop(id, reason?)`, and
+`subscribe(listener)`. Bash and monitor jobs appear in one list; output reads use
+the existing bounded combined log contract. The API manages the same records as
+the LLM tools and becomes unavailable when the owning Pi session shuts down. It
+does not persist or recover processes across Pi process restarts.

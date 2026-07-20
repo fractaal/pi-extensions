@@ -8,7 +8,11 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExtensionApiMock, type ExtensionApiMock } from "../../../tests/mock-extension-api.ts";
 import { createBashTaskManager } from "../src/bash-backgrounding.ts";
-import agenticProcessesExtension, { bashBackgroundingExtension, monitorExtension } from "../src/index.ts";
+import agenticProcessesExtension, {
+	bashBackgroundingExtension,
+	monitorExtension,
+	requestAgenticProcessManagementApi,
+} from "../src/index.ts";
 import { createMonitorManager } from "../src/monitor.ts";
 import { killChildProcessTree, killProcessTree, resolveBashShell, windowsBashCandidates } from "../src/shell.ts";
 
@@ -19,6 +23,8 @@ type TextToolResult = {
 
 type EventBusMock = {
 	emits: Array<{ name: string; data: unknown }>;
+	emit(name: string, data: unknown): void;
+	on(name: string, listener: (data: unknown) => void): () => void;
 };
 
 const execFileAsync = promisify(execFile);
@@ -36,17 +42,21 @@ async function tempCwd(): Promise<string> {
 }
 
 function installEventBus(apiMock: ExtensionApiMock): EventBusMock {
-	const eventBus: EventBusMock = { emits: [] };
-	Object.assign(apiMock.api, {
-		events: {
-			emit(name: string, data: unknown) {
-				eventBus.emits.push({ name, data });
-			},
-			on() {
-				return () => undefined;
-			},
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	const eventBus: EventBusMock = {
+		emits: [],
+		emit(name, data) {
+			eventBus.emits.push({ name, data });
+			for (const listener of listeners.get(name) ?? []) listener(data);
 		},
-	});
+		on(name, listener) {
+			const channel = listeners.get(name) ?? new Set();
+			channel.add(listener);
+			listeners.set(name, channel);
+			return () => channel.delete(listener);
+		},
+	};
+	Object.assign(apiMock.api, { events: eventBus });
 	return eventBus;
 }
 
@@ -206,6 +216,66 @@ describe("agentic processes extension", () => {
 		expect([...monitorMock.tools.keys()].sort()).toEqual(
 			["monitor_list", "monitor_start", "monitor_status", "monitor_stop"].sort(),
 		);
+	});
+
+	it("manages the same Bash and monitor records created through the LLM tools", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const events = installEventBus(apiMock);
+		agenticProcessesExtension(apiMock.api);
+		const management = requestAgenticProcessManagementApi(events);
+		if (!management) throw new Error("agentic process management API missing");
+		const updates: string[] = [];
+		management.subscribe((snapshot) => updates.push(`${snapshot.kind}:${snapshot.id}:${snapshot.status}`));
+
+		const bash = apiMock.getTool("bash").execute;
+		const monitorStart = apiMock.getTool("monitor_start").execute;
+		if (!bash || !monitorStart) throw new Error("process tools missing");
+		const bashStart = await bash(
+			"call-managed-bash",
+			{ command: "printf 'bash-live\\n'; sleep 30", run_in_background: true },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const monitorStartResult = await monitorStart(
+			"call-managed-monitor",
+			{ command: "printf 'monitor-live\\n'; sleep 30", name: "managed monitor", inject: false },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const bashId = taskIdFrom(bashStart);
+		const monitorId = monitorIdFrom(monitorStartResult);
+
+		expect(management.list().map(({ id, kind }) => ({ id, kind }))).toEqual(
+			expect.arrayContaining([
+				{ id: bashId, kind: "bash" },
+				{ id: monitorId, kind: "monitor" },
+			]),
+		);
+		await vi.waitFor(async () => {
+			expect((await management.readOutput(bashId, 4096)).output).toContain("bash-live");
+			expect((await management.readOutput(monitorId, 4096)).output).toContain("monitor-live");
+		});
+
+		await management.stop(bashId, "headless test cleanup");
+		await management.stop(monitorId, "headless test cleanup");
+		await vi.waitFor(() => {
+			const statuses = new Map(management.list().map((process) => [process.id, process.status]));
+			expect(statuses.get(bashId)).toBe("killed");
+			expect(statuses.get(monitorId)).toBe("killed");
+		});
+		expect((await management.readOutput(bashId, 4096)).output).toContain("bash-live");
+		expect((await management.readOutput(monitorId, 4096)).output).toContain("monitor-live");
+		expect(updates).toContain(`bash:${bashId}:running`);
+		expect(updates).toContain(`bash:${bashId}:killed`);
+		expect(updates).toContain(`monitor:${monitorId}:running`);
+		expect(updates).toContain(`monitor:${monitorId}:killed`);
+		await expect(management.stop(bashId)).rejects.toThrow("already killed");
+
+		for (const handler of apiMock.getHandlers("session_shutdown")) await handler({}, ctx(cwd));
+		expect(() => management.list()).toThrow("unavailable after Pi session shutdown");
 	});
 
 	it("runs a foreground bash command with the compatible output shape", async () => {
@@ -459,6 +529,10 @@ describe("agentic processes extension", () => {
 		expect(text(listed)).toContain(monitorId);
 		const stopped = await manager.stop({ id: monitorId });
 		expect(text(stopped)).toContain(`Sent SIGTERM to monitor manager-monitor (${monitorId}).`);
+		await vi.waitFor(() => expect(manager.get(monitorId)?.liveTaskStatus).toBe("killed"));
+		const terminalUpdatedAt = manager.get(monitorId)?.updatedAt;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(manager.get(monitorId)?.updatedAt).toBe(terminalUpdatedAt);
 		expect(updates.some((update) => update.endsWith(":running"))).toBe(true);
 		expect(updates.length).toBeGreaterThanOrEqual(2);
 		unsubscribe();
