@@ -315,7 +315,7 @@ describe("agentic processes extension", () => {
 		expect(events.emits.some((event) => event.name === "aria-local:background-task-update")).toBe(true);
 	});
 
-	it("steers the active agent as soon as a background bash task completes", async () => {
+	it("sends background completion with steering delivery", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
 		installEventBus(apiMock);
@@ -332,6 +332,41 @@ describe("agentic processes extension", () => {
 			ctx(cwd),
 		);
 
+		await vi.waitFor(() => {
+			expect(sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "background-bash-task" }),
+				{ triggerTurn: true, deliverAs: "steer" },
+			);
+		});
+	});
+
+	it("keeps completion steering enabled after a blocking output poll times out", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		bashBackgroundingExtension(apiMock.api);
+		const bash = apiMock.getTool("bash").execute;
+		const bashOutput = apiMock.getTool("bash_output").execute;
+		if (!bash || !bashOutput) throw new Error("bash tools missing");
+		const sendMessage = vi.spyOn(apiMock.api, "sendMessage");
+
+		const started = await bash(
+			"call-bg-poll-timeout",
+			{ command: "sleep 0.2; printf 'done\\n'", run_in_background: true },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const taskId = taskIdFrom(started);
+		const polled = await bashOutput(
+			"call-output-poll-timeout",
+			{ task_id: taskId, block: true, wait_seconds: 0.01, tail_bytes: 4096 },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+
+		expect(text(polled)).toContain("status: running");
 		await vi.waitFor(() => {
 			expect(sendMessage).toHaveBeenCalledWith(
 				expect.objectContaining({ customType: "background-bash-task" }),

@@ -658,9 +658,11 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 					`Unknown background bash task id: ${options.taskId}. Use bash_tasks to list live tasks in this Pi process.`,
 				);
 			}
-			if (options.block === true) task.notifyOnCompletion = false;
 			if (options.block === true && task.status === "running") {
+				const notifyOnCompletion = task.notifyOnCompletion;
+				task.notifyOnCompletion = false;
 				await Promise.race([task.completion, delay(resolveBashOutputWaitSeconds(options.waitSeconds) * 1000)]);
+				if (task.status === "running") task.notifyOnCompletion = notifyOnCompletion;
 			}
 			const output = await readTail(task.outputPath, clampBytes(options.tailBytes, 1, 262_144, DEFAULT_TAIL_BYTES));
 			return { task, output };
