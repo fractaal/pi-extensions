@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExtensionApiMock, type ExtensionApiMock } from "../../../tests/mock-extension-api.ts";
@@ -19,6 +21,7 @@ type EventBusMock = {
 	emits: Array<{ name: string; data: unknown }>;
 };
 
+const execFileAsync = promisify(execFile);
 const tempRoots: string[] = [];
 
 afterEach(async () => {
@@ -340,6 +343,67 @@ describe("agentic processes extension", () => {
 		});
 	});
 
+	it.skipIf(process.platform === "win32")(
+		"suppresses completion steering until a timed-out blocking poll finishes reading its snapshot",
+		async () => {
+			const cwd = await tempCwd();
+			const apiMock = createExtensionApiMock();
+			installEventBus(apiMock);
+			const manager = createBashTaskManager(apiMock.api);
+			const sendMessage = vi.spyOn(apiMock.api, "sendMessage");
+			const task = await manager.start({
+				command: "sleep 0.05; printf 'done\\n'",
+				cwd,
+				backgroundAfterSeconds: 0.01,
+			});
+			task.notifyOnCompletion = true;
+			const fifoPath = join(cwd, "blocking-output-snapshot.fifo");
+			await execFileAsync("mkfifo", [fifoPath]);
+			task.outputPath = fifoPath;
+
+			const readPromise = manager.readOutput({
+				taskId: task.taskId,
+				block: true,
+				waitSeconds: 0.01,
+				tailBytes: 4096,
+			});
+			await task.completion;
+			const writer = await open(fifoPath, "w");
+			await writer.close();
+			const result = await readPromise;
+
+			expect(result.task.status).toBe("completed");
+			expect(result.task.notifyOnCompletion).toBe(false);
+			expect(sendMessage).not.toHaveBeenCalled();
+		},
+	);
+
+	it("delivers completion steering when a blocking poll observes completion but its snapshot read fails", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		const manager = createBashTaskManager(apiMock.api);
+		const sendMessage = vi.spyOn(apiMock.api, "sendMessage");
+		const task = await manager.start({
+			command: "sleep 0.05; printf 'done\\n'",
+			cwd,
+			backgroundAfterSeconds: 0.01,
+		});
+		task.notifyOnCompletion = true;
+		task.outputPath = cwd;
+
+		await expect(
+			manager.readOutput({ taskId: task.taskId, block: true, waitSeconds: 2, tailBytes: 4096 }),
+		).rejects.toThrow();
+		await task.completion;
+
+		expect(sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "background-bash-task" }),
+			{ triggerTurn: true, deliverAs: "steer" },
+		);
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps completion steering enabled after a blocking output poll times out", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
@@ -372,6 +436,7 @@ describe("agentic processes extension", () => {
 				expect.objectContaining({ customType: "background-bash-task" }),
 				{ triggerTurn: true, deliverAs: "steer" },
 			);
+			expect(sendMessage).toHaveBeenCalledTimes(1);
 		});
 	});
 

@@ -109,6 +109,8 @@ export interface BashTaskRecord {
 	exitCode: number | null;
 	reason?: string;
 	notifyOnCompletion: boolean;
+	completionNotificationSuppressions: number;
+	pendingCompletionNotification?: TaskCompletion;
 	completion: Promise<TaskCompletion>;
 	resolveCompletion: (completion: TaskCompletion) => void;
 	backgroundAfterMs: number;
@@ -221,6 +223,19 @@ function requestKill(pi: ExtensionAPI, store: BashTaskStore, task: TaskRecord, r
 	timer.unref();
 }
 
+function flushCompletionNotification(pi: ExtensionAPI, task: TaskRecord, completion?: TaskCompletion): void {
+	if (completion && task.notifyOnCompletion && COMPLETION_NOTIFICATION_ENABLED) {
+		task.pendingCompletionNotification = completion;
+	}
+	if (task.completionNotificationSuppressions > 0) return;
+
+	const pending = task.pendingCompletionNotification;
+	task.pendingCompletionNotification = undefined;
+	if (pending && task.notifyOnCompletion && COMPLETION_NOTIFICATION_ENABLED) {
+		queueCompletionMessage(pi, pending);
+	}
+}
+
 function finishTask(
 	pi: ExtensionAPI,
 	store: BashTaskStore,
@@ -249,9 +264,7 @@ function finishTask(
 		};
 		task.resolveCompletion(completion);
 		emitBashTaskUpdate(store, task);
-		if (task.notifyOnCompletion && COMPLETION_NOTIFICATION_ENABLED) {
-			queueCompletionMessage(pi, completion);
-		}
+		flushCompletionNotification(pi, task, completion);
 		pruneCompletedTasks(store);
 	};
 	if (task.stream.destroyed || task.stream.writableEnded) {
@@ -326,6 +339,7 @@ async function spawnTask(
 		status: "running",
 		exitCode: null,
 		notifyOnCompletion: false,
+		completionNotificationSuppressions: 0,
 		completion,
 		resolveCompletion,
 		tailChunks: [],
@@ -658,14 +672,34 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 					`Unknown background bash task id: ${options.taskId}. Use bash_tasks to list live tasks in this Pi process.`,
 				);
 			}
-			if (options.block === true && task.status === "running") {
-				const notifyOnCompletion = task.notifyOnCompletion;
-				task.notifyOnCompletion = false;
-				await Promise.race([task.completion, delay(resolveBashOutputWaitSeconds(options.waitSeconds) * 1000)]);
-				if (task.status === "running") task.notifyOnCompletion = notifyOnCompletion;
+			if (options.block !== true || task.completionSettled) {
+				const output = await readTail(
+					task.outputPath,
+					clampBytes(options.tailBytes, 1, 262_144, DEFAULT_TAIL_BYTES),
+				);
+				return { task, output };
 			}
-			const output = await readTail(task.outputPath, clampBytes(options.tailBytes, 1, 262_144, DEFAULT_TAIL_BYTES));
-			return { task, output };
+
+			task.completionNotificationSuppressions++;
+			try {
+				if (task.status === "running") {
+					await Promise.race([
+						task.completion,
+						delay(resolveBashOutputWaitSeconds(options.waitSeconds) * 1000),
+					]);
+				}
+				const output = await readTail(
+					task.outputPath,
+					clampBytes(options.tailBytes, 1, 262_144, DEFAULT_TAIL_BYTES),
+				);
+				if (task.status !== "running") {
+					task.notifyOnCompletion = false;
+				}
+				return { task, output };
+			} finally {
+				task.completionNotificationSuppressions--;
+				flushCompletionNotification(pi, task);
+			}
 		},
 		async stop(taskId, reason = "killed by kill_bash", waitMs = 3_000) {
 			const task = store.tasks.get(taskId);
