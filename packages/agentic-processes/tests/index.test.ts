@@ -157,15 +157,15 @@ describe("shell resolution and process termination", () => {
 		).toEqual({ command: "bash", args: ["-lc"] });
 	});
 
-	it("uses taskkill for Windows process-tree termination", () => {
+	it("uses taskkill for Windows process-tree termination and waits for successful dispatch", async () => {
 		const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+		const killer = new EventEmitter();
 		const fakeSpawn = ((command: string, args: string[], options: unknown) => {
 			calls.push({ command, args, options });
-			return new EventEmitter();
+			return killer;
 		}) as never;
 
-		killProcessTree(1234, "SIGKILL", { platform: "win32", spawn: fakeSpawn });
-
+		const dispatched = killProcessTree(1234, "SIGKILL", { platform: "win32", spawn: fakeSpawn });
 		expect(calls).toEqual([
 			{
 				command: "taskkill",
@@ -173,6 +173,17 @@ describe("shell resolution and process termination", () => {
 				options: { stdio: "ignore", windowsHide: true },
 			},
 		]);
+		killer.emit("close", 0);
+		await expect(dispatched).resolves.toBeUndefined();
+	});
+
+	it("rejects Windows process-tree termination when taskkill fails", async () => {
+		const killer = new EventEmitter();
+		const fakeSpawn = (() => killer) as never;
+		const dispatched = killProcessTree(1234, "SIGTERM", { platform: "win32", spawn: fakeSpawn });
+
+		killer.emit("close", 1);
+		await expect(dispatched).rejects.toThrow("taskkill exited with code 1");
 	});
 
 	it("falls back to ChildProcess.kill if Windows taskkill cannot start", () => {
@@ -225,6 +236,10 @@ describe("agentic processes extension", () => {
 		agenticProcessesExtension(apiMock.api);
 		const management = requestAgenticProcessManagementApi(events);
 		if (!management) throw new Error("agentic process management API missing");
+		const subscriberError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		management.subscribe(() => {
+			throw new Error("broken management observer");
+		});
 		const updates: string[] = [];
 		management.subscribe((snapshot) => updates.push(`${snapshot.kind}:${snapshot.id}:${snapshot.status}`));
 
@@ -272,6 +287,10 @@ describe("agentic processes extension", () => {
 		expect(updates).toContain(`bash:${bashId}:killed`);
 		expect(updates).toContain(`monitor:${monitorId}:running`);
 		expect(updates).toContain(`monitor:${monitorId}:killed`);
+		expect(subscriberError).toHaveBeenCalledWith(
+			"[pi-agentic-processes] management API subscriber failed",
+			expect.any(Error),
+		);
 		await expect(management.stop(bashId)).rejects.toThrow("already killed");
 
 		for (const handler of apiMock.getHandlers("session_shutdown")) await handler({}, ctx(cwd));
@@ -315,6 +334,51 @@ describe("agentic processes extension", () => {
 		expect(updates.some((update) => update.endsWith(":running"))).toBe(true);
 		expect(updates.some((update) => update.endsWith(":completed"))).toBe(true);
 		unsubscribe();
+	});
+
+	it("isolates throwing Bash subscribers from task lifecycle and other observers", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createBashTaskManager(apiMock.api);
+		const subscriberError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		manager.subscribe(() => {
+			throw new Error("broken Bash observer");
+		});
+		const updates: string[] = [];
+		manager.subscribe((snapshot) => updates.push(snapshot.status));
+
+		const task = await manager.start({
+			command: "printf 'observer-safe\\n'",
+			cwd,
+			backgroundAfterSeconds: 0.01,
+		});
+		await task.completion;
+
+		expect(manager.get(task.taskId)?.status).toBe("completed");
+		expect(updates).toContain("running");
+		expect(updates).toContain("completed");
+		expect(subscriberError).toHaveBeenCalledWith(
+			"[pi-agentic-processes] Bash task subscriber failed",
+			expect.any(Error),
+		);
+	});
+
+	it("reports real Bash output availability and stable terminal timestamps", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createBashTaskManager(apiMock.api);
+		const silent = await manager.start({ command: ":", cwd, backgroundAfterSeconds: 0.01 });
+		await silent.completion;
+
+		const terminal = manager.getSnapshot(silent.taskId);
+		expect(terminal?.hasOutput).toBe(false);
+		expect(terminal?.updatedAtMs).toBeGreaterThanOrEqual(terminal?.startedAtMs ?? Number.POSITIVE_INFINITY);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(manager.getSnapshot(silent.taskId)?.updatedAt).toBe(terminal?.updatedAt);
+
+		const noisy = await manager.start({ command: "printf 'output\\n'", cwd, backgroundAfterSeconds: 0.01 });
+		await noisy.completion;
+		expect(manager.getSnapshot(noisy.taskId)?.hasOutput).toBe(true);
 	});
 
 	it("keeps bash task state scoped to each manager instance", async () => {
@@ -536,6 +600,53 @@ describe("agentic processes extension", () => {
 		expect(updates.some((update) => update.endsWith(":running"))).toBe(true);
 		expect(updates.length).toBeGreaterThanOrEqual(2);
 		unsubscribe();
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"rejects failed monitor signal dispatch without falsely recording a stop",
+		async () => {
+			const cwd = await tempCwd();
+			const apiMock = createExtensionApiMock();
+			const manager = createMonitorManager(apiMock.api);
+			const started = await manager.start({ command: "sleep 30", inject: false, name: "dispatch-failure" }, cwd);
+			const monitorId = monitorIdFrom(started);
+			const kill = vi.spyOn(process, "kill").mockImplementationOnce(() => {
+				throw new Error("EPERM test failure");
+			});
+
+			await expect(manager.stop({ id: monitorId })).rejects.toThrow("EPERM test failure");
+			expect(manager.get(monitorId)).toMatchObject({ liveTaskStatus: "running", stopReason: undefined });
+			expect((await manager.readOutput(monitorId, 4096)).output).toContain("failed to send SIGTERM");
+
+			kill.mockRestore();
+			await manager.stop({ id: monitorId, reason: "test cleanup" });
+			await vi.waitFor(() => expect(manager.get(monitorId)?.liveTaskStatus).toBe("killed"));
+		},
+	);
+
+	it("isolates throwing monitor subscribers from process lifecycle and other observers", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createMonitorManager(apiMock.api);
+		const subscriberError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		manager.subscribe(() => {
+			throw new Error("broken monitor observer");
+		});
+		const updates: string[] = [];
+		manager.subscribe((snapshot) => updates.push(snapshot.liveTaskStatus));
+
+		const started = await manager.start({ command: "printf 'observer-safe\\n'", inject: false }, cwd);
+		const monitorId = monitorIdFrom(started);
+		await vi.waitFor(() => expect(manager.get(monitorId)?.liveTaskStatus).toBe("completed"));
+
+		expect(updates).toContain("running");
+		expect(updates).toContain("completed");
+		expect((await manager.readOutput(monitorId, 4096)).output).toContain("observer-safe");
+		expect(subscriberError).toHaveBeenCalledWith(
+			"[pi-agentic-processes] monitor subscriber failed",
+			expect.any(Error),
+		);
+		manager.shutdown();
 	});
 
 	it("supports monitor start, status, list, log tail, and stop flows", async () => {

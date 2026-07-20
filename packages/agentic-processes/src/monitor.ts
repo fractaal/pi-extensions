@@ -8,6 +8,7 @@ import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { killProcessTree, resolveBashShell } from "./shell.ts";
+import { emitToSubscribers } from "./subscribers.ts";
 
 const DEFAULT_BATCH_MS = 1000;
 const DEFAULT_MAX_LINES_PER_MESSAGE = 20;
@@ -95,6 +96,7 @@ interface Monitor {
 	stderrReader?: ReadlineInterface;
 	stopRequested: boolean;
 	stopReason?: string;
+	stopDispatch?: Promise<void>;
 	shutdown: boolean;
 }
 
@@ -236,6 +238,7 @@ function monitorMetadata(monitor: Monitor) {
 		firstLogWriteErrorAt: monitor.firstLogWriteErrorAt,
 		lastLogWriteError: monitor.lastLogWriteError,
 		stopReason: monitor.stopReason,
+		stopDispatchPending: Boolean(monitor.stopDispatch),
 		logDir: monitor.logDir,
 		combinedLogPath: monitor.combinedLogPath,
 		stdoutLogPath: monitor.stdoutLogPath,
@@ -582,6 +585,7 @@ function summarizeMonitor(monitor: Monitor, tail = 20) {
 		firstLogWriteErrorAt: monitor.firstLogWriteErrorAt,
 		lastLogWriteError: monitor.lastLogWriteError,
 		stopReason: monitor.stopReason,
+		stopDispatchPending: Boolean(monitor.stopDispatch),
 		injectionPaused: monitor.injectionPaused,
 		guardrailTriggeredAt: monitor.guardrailTriggeredAt,
 		guardrailReason: monitor.guardrailReason,
@@ -599,29 +603,37 @@ function summarizeMonitor(monitor: Monitor, tail = 20) {
 	};
 }
 
-function stopMonitor(
+async function stopMonitor(
 	pi: ExtensionAPI,
 	monitor: Monitor,
 	signal: NodeJS.Signals | string = "SIGTERM",
 	reason = "stopped by monitor_stop",
-) {
-	if (monitor.status !== "running") return;
-	monitor.stopRequested = true;
-	monitor.stopReason = reason;
+): Promise<void> {
+	if (monitor.status !== "running") throw new Error(`Monitor ${monitor.id} is already ${monitor.status}.`);
+	if (monitor.stopRequested) throw new Error(`Monitor ${monitor.id} is already stopping.`);
+	if (monitor.stopDispatch) return monitor.stopDispatch;
 	if (!monitor.process.pid) {
-		enqueueLine(pi, monitor, "monitor", `failed to send ${signal}: missing monitor process pid`);
-		return;
+		const error = new Error(`Cannot send ${signal}: monitor ${monitor.id} has no process pid.`);
+		enqueueLine(pi, monitor, "monitor", `failed to send ${signal}: ${error.message}`);
+		throw error;
 	}
+
+	const dispatch = killProcessTree(monitor.process.pid, signal as NodeJS.Signals)
+		.then(() => {
+			monitor.stopRequested = true;
+			monitor.stopReason = reason;
+			enqueueLine(pi, monitor, "monitor", `sent ${signal}`);
+		})
+		.catch((error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			enqueueLine(pi, monitor, "monitor", `failed to send ${signal}: ${message}`);
+			throw new Error(`Failed to send ${signal} to monitor ${monitor.id}: ${message}`, { cause: error });
+		});
+	monitor.stopDispatch = dispatch;
 	try {
-		killProcessTree(monitor.process.pid, signal as NodeJS.Signals);
-		enqueueLine(pi, monitor, "monitor", `sent ${signal}`);
-	} catch (error) {
-		enqueueLine(
-			pi,
-			monitor,
-			"monitor",
-			`failed to send ${signal}: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		await dispatch;
+	} finally {
+		if (monitor.stopDispatch === dispatch) monitor.stopDispatch = undefined;
 	}
 }
 
@@ -732,8 +744,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 	let latestStatusCtx: StatusUiContext | undefined;
 
 	function emitMonitorUpdate(monitor: Monitor): void {
-		const snapshot = monitorSnapshot(monitor);
-		for (const listener of subscribers) listener(snapshot);
+		emitToSubscribers(subscribers, monitorSnapshot(monitor), "monitor");
 	}
 
 	function rememberUi(ctx?: StatusUiContext) {
@@ -751,7 +762,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 		if (active.length === 1) {
 			const monitor = active[0];
 			if (!monitor) return undefined;
-			return `${monitor.stopRequested ? "monitor stopping" : "monitor"}: ${shortLabel(monitor.name)}`;
+			return `${monitor.stopRequested || monitor.stopDispatch ? "monitor stopping" : "monitor"}: ${shortLabel(monitor.name)}`;
 		}
 
 		const labels = active
@@ -783,13 +794,17 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			monitor.stderrReader?.close();
 			writeMonitorMetadata(monitor);
 			closeMonitorLogFiles(monitor);
-			if (monitor.status === "running") {
-				monitor.stopRequested = true;
-				try {
-					if (monitor.process.pid) killProcessTree(monitor.process.pid, "SIGTERM");
-				} catch {
-					// Process group may already be gone.
-				}
+			if (monitor.status === "running" && monitor.process.pid) {
+				const dispatch = killProcessTree(monitor.process.pid, "SIGTERM")
+					.then(() => {
+						monitor.stopRequested = true;
+						monitor.stopReason = "Pi session shutdown";
+					})
+					.catch(() => undefined);
+				monitor.stopDispatch = dispatch;
+				void dispatch.finally(() => {
+					if (monitor.stopDispatch === dispatch) monitor.stopDispatch = undefined;
+				});
 			}
 		}
 		monitors.clear();
@@ -870,7 +885,8 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 				if (!monitor.shutdown) updateMonitorStatus(statusCtx);
 			});
 
-			child.on("close", (code, signal) => {
+			child.on("close", async (code, signal) => {
+				if (monitor.stopDispatch) await monitor.stopDispatch.catch(() => undefined);
 				if (monitor.status !== "error") {
 					monitor.status = monitor.stopRequested ? "stopped" : code === 0 ? "exited" : "failed";
 				}
@@ -1014,7 +1030,14 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 
 			const signal = typeof params.signal === "string" && params.signal ? params.signal : "SIGTERM";
 			const reason = typeof params.reason === "string" && params.reason.trim() ? params.reason.trim() : "stopped by monitor_stop";
-			stopMonitor(pi, monitor, signal, reason);
+			try {
+				await stopMonitor(pi, monitor, signal, reason);
+			} catch (error) {
+				flushPending(pi, monitor);
+				emitMonitorUpdate(monitor);
+				updateMonitorStatus(statusCtx);
+				throw error;
+			}
 			flushPending(pi, monitor);
 			emitMonitorUpdate(monitor);
 			updateMonitorStatus(statusCtx);

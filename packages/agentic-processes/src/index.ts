@@ -9,6 +9,7 @@ import {
 	type MonitorSnapshot,
 	registerMonitorExtension,
 } from "./monitor.ts";
+import { emitToSubscribers } from "./subscribers.ts";
 
 export const AGENTIC_PROCESS_MANAGEMENT_API_REQUEST = "pi-agentic-processes:management-api-request";
 
@@ -118,7 +119,7 @@ function createManagementApi(
 	let available = true;
 
 	const publish = (snapshot: AgenticProcessSnapshot) => {
-		for (const listener of listeners) listener(snapshot);
+		emitToSubscribers(listeners, snapshot, "management API");
 	};
 	const unsubscribeBash = bash.subscribe((snapshot) => publish(bashSnapshot(snapshot)));
 	const unsubscribeMonitors = monitors.subscribe((snapshot) => publish(monitorSnapshot(snapshot)));

@@ -96,14 +96,34 @@ export function killChildProcessTree(
 	}
 }
 
-export function killProcessTree(pid: number, signal: NodeJS.Signals = "SIGTERM", options: KillProcessOptions = {}): void {
+export async function killProcessTree(
+	pid: number,
+	signal: NodeJS.Signals = "SIGTERM",
+	options: KillProcessOptions = {},
+): Promise<void> {
 	const platform = options.platform ?? process.platform;
-	if (platform === "win32") {
-		const killer = spawnTaskkill(pid, signal, options.spawn ?? nodeSpawn);
-		killer.on("error", () => undefined);
+	if (platform !== "win32") {
+		process.kill(-pid, signal);
 		return;
 	}
-	process.kill(-pid, signal);
+
+	await new Promise<void>((resolve, reject) => {
+		let killer: ReturnType<Spawn>;
+		try {
+			killer = spawnTaskkill(pid, signal, options.spawn ?? nodeSpawn);
+		} catch (error) {
+			reject(error);
+			return;
+		}
+		killer.once("error", reject);
+		killer.once("close", (code) => {
+			if (code === 0) {
+				resolve();
+				return;
+			}
+			reject(new Error(`taskkill exited with code ${code ?? "null"}.`));
+		});
+	});
 }
 
 function spawnTaskkill(pid: number, signal: NodeJS.Signals, spawn: Spawn): ReturnType<Spawn> {

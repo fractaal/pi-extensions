@@ -7,6 +7,7 @@ import type { AgentToolUpdateCallback, ExtensionAPI } from "@earendil-works/pi-c
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { killChildProcessTree, resolveBashShell } from "./shell.ts";
+import { emitToSubscribers } from "./subscribers.ts";
 
 const FOREGROUND_BUDGET_MS = 60_000;
 const MAX_FOREGROUND_WAIT_SECONDS = FOREGROUND_BUDGET_MS / 1000;
@@ -103,6 +104,7 @@ export interface BashTaskRecord {
 	cwd: string;
 	outputPath: string;
 	startedAt: number;
+	updatedAt: number;
 	child: ChildProcess;
 	stream: WriteStream;
 	status: TaskStatus;
@@ -141,6 +143,7 @@ function createBashTaskStore(): BashTaskStore {
 
 function appendTail(task: TaskRecord, chunk: Buffer | string): void {
 	const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk;
+	task.updatedAt = Date.now();
 	task.tailChunks.push(text);
 	task.tailBytes += Buffer.byteLength(text);
 	while (task.tailBytes > TOOL_OUTPUT_BYTES * 2 && task.tailChunks.length > 1) {
@@ -210,6 +213,7 @@ function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGKILL
 function requestKill(pi: ExtensionAPI, store: BashTaskStore, task: TaskRecord, reason: string): void {
 	if (task.status !== "running") return;
 	task.reason = reason;
+	task.updatedAt = Date.now();
 	killProcessGroup(task.child);
 	const timer = setTimeout(() => {
 		if (task.completionSettled) return;
@@ -247,6 +251,7 @@ function finishTask(
 	if (task.status === "running") {
 		task.status = status;
 		task.exitCode = exitCode;
+		task.updatedAt = Date.now();
 	}
 	if (task.killTimer) clearTimeout(task.killTimer);
 	const settle = () => {
@@ -327,13 +332,15 @@ async function spawnTask(
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
 	});
+	const startedAt = Date.now();
 	const task: TaskRecord = {
 		taskId,
 		command,
 		description: description?.trim() || command,
 		cwd,
 		outputPath,
-		startedAt: Date.now(),
+		startedAt,
+		updatedAt: startedAt,
 		child,
 		stream,
 		status: "running",
@@ -543,7 +550,6 @@ function taskDetails(task: TaskRecord): BashTaskSnapshot {
 }
 
 function bashTaskSnapshot(task: TaskRecord): BashTaskSnapshot {
-	const updatedAt = new Date().toISOString();
 	return {
 		taskId: task.taskId,
 		status: task.status,
@@ -555,18 +561,17 @@ function bashTaskSnapshot(task: TaskRecord): BashTaskSnapshot {
 		outputPath: task.outputPath,
 		startedAt: new Date(task.startedAt).toISOString(),
 		startedAtMs: task.startedAt,
-		updatedAt,
-		updatedAtMs: Date.parse(updatedAt),
+		updatedAt: new Date(task.updatedAt).toISOString(),
+		updatedAtMs: task.updatedAt,
 		killAfterMs: task.killAfterMs,
-		hasOutput: true,
+		hasOutput: task.tailBytes > 0,
 		hasResult: task.status !== "running",
 		outputTail: snapshotTail(task, 12_000),
 	};
 }
 
 function emitBashTaskUpdate(store: BashTaskStore, task: TaskRecord): void {
-	const snapshot = bashTaskSnapshot(task);
-	for (const listener of store.subscribers) listener(snapshot);
+	emitToSubscribers(store.subscribers, bashTaskSnapshot(task), "Bash task");
 }
 
 function publishAriaLocalBackgroundTask(pi: ExtensionAPI, snapshot: BashTaskSnapshot): void {
