@@ -9,6 +9,12 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 - Tool results whose IDs were never registered in the active assistant tool-use turn are refused instead of being queued against another pending call. Remaining handlers receive an internal-error result so the turn cannot report false success.
 - If a query tears down while parallel tool results are still queued or unresolved, the bridge writes diagnostics, marks the Claude session for rebuild, and re-imports delivered results from Pi history on the next turn.
 
+## Executable resolution
+
+- `src/executable-resolution.ts` is the sole resolver for bridge execution and programmatic hosts. Import it through `@fractaal/pi-claude-bridge/executable-resolution` instead of copying PATH logic.
+- On Windows, Agent SDK execution resolves native `.exe` or `.com` binaries. Status and login callers may opt into `.cmd` and `.bat` shell shims.
+- Auto-discovered executable paths stay process-local. Only an explicit user-configured path belongs in persisted bridge settings.
+
 ## Diagnostics
 
 - Rate-limit errors are deduplicated before user notification. The bridge emits `vstack:rate-limit` so `pi-qol` can opt into reset-time auto-resume.
