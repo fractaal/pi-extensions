@@ -10,8 +10,9 @@ import { createHash } from "crypto";
 import { accessSync, appendFileSync, chmodSync, constants as fsConstants, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { resolve as pathResolve } from "path";
 import { homedir } from "os";
-import { delimiter, dirname, join } from "path";
+import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
+import { resolveClaudeCodeExecutable } from "./executable-resolution.js";
 import { FABLE_FALLBACK_MODEL_ID, FABLE_MODEL_ID, buildModels, fallbackModelForPrimaryModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
@@ -69,26 +70,6 @@ function debug(...args: unknown[]) {
 	};
 	const msg = args.map(fmt).join(" ");
 	try { appendFileSync(DEBUG_LOG_PATH, `[${ts}] [${moduleInstanceId}] ${msg}\n`); } catch { /* debug is best effort */ }
-}
-
-function executableFromPath(name: string): string | undefined {
-	const paths = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
-	for (const dir of paths) {
-		const candidate = join(dir, name);
-		try {
-			accessSync(candidate, fsConstants.X_OK);
-			return candidate;
-		} catch {
-			// keep searching
-		}
-	}
-	return undefined;
-}
-
-function resolveClaudeExecutable(configured?: string): string | undefined {
-	const trimmed = configured?.trim();
-	if (trimmed) return trimmed;
-	return executableFromPath("claude") ?? executableFromPath("claude-code");
 }
 
 export type ClaudeExecutableFileType = "elf" | "mach-o" | "pe" | "shebang-script" | "empty" | "unknown";
@@ -771,7 +752,7 @@ function sdkTextFromMessage(message: SDKMessage): string | undefined {
 
 async function runExtraUsageHelper(cwd: string, config = loadConfig(cwd)): Promise<string> {
 	const providerSettings = config.provider ?? {};
-	const claudeExecutable = resolveClaudeExecutable(providerSettings.pathToClaudeCodeExecutable);
+	const claudeExecutable = resolveClaudeCodeExecutable({ configuredPath: providerSettings.pathToClaudeCodeExecutable })?.executablePath;
 	if (claudeExecutable) preflightClaudeExecutable(claudeExecutable, cwd);
 
 	const helperQuery = query({
@@ -1938,7 +1919,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			? undefined
 			: providerSettings.settingSources ?? ["user", "project"];
 	const strictMcpConfigEnabled = !appendSystemPrompt && providerSettings.strictMcpConfig !== false;
-	const claudeExecutable = resolveClaudeExecutable(providerSettings.pathToClaudeCodeExecutable);
+	const claudeExecutable = resolveClaudeCodeExecutable({ configuredPath: providerSettings.pathToClaudeCodeExecutable })?.executablePath;
 	const claudeExecutablePreflight = claudeExecutable ? preflightClaudeExecutable(claudeExecutable, cwd) : undefined;
 	const { sessionId: resumeSessionId } = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
 

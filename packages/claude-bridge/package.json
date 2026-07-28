@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-claude-bridge",
-  "version": "1.6.2-fractal.1",
+  "version": "1.6.3-fractal.0",
   "description": "Pi provider bridge that runs Claude Code through the Claude Agent SDK.",
   "type": "module",
   "keywords": [
@@ -15,6 +15,10 @@
   "exports": {
     ".": "./bundle/index.js",
     "./isolated": "./bundle/isolated.js",
+    "./executable-resolution": {
+      "types": "./dist/executable-resolution.d.ts",
+      "import": "./dist/executable-resolution.js"
+    },
     "./bundle/index.js": "./bundle/index.js"
   },
   "pi": {
@@ -187,7 +191,7 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/index.js --define:CLAUDE_BRIDGE_ISOLATED=false --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/isolated.js --define:CLAUDE_BRIDGE_ISOLATED=true --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/index.js --define:CLAUDE_BRIDGE_ISOLATED=false --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/isolated.js --define:CLAUDE_BRIDGE_ISOLATED=true --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/executable-resolution.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/executable-resolution.js && tsc -p tsconfig.executable-resolution.json",
     "prepack": "npm run build",
     "pretest": "npm run build",
     "test": "npm run test:unit",
@@ -196,6 +200,7 @@
   },
   "files": [
     "bundle/",
+    "dist/",
     "src/",
     "assets/",
     "LICENSE",
