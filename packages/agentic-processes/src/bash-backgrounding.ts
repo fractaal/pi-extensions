@@ -1,10 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
-import { mkdir, open, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentToolUpdateCallback, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { killChildProcessTree, resolveBashShell } from "./shell.ts";
 import { emitToSubscribers } from "./subscribers.ts";
@@ -125,9 +125,12 @@ export interface BashTaskRecord {
 
 interface BashTaskStore {
 	tasks: Map<string, TaskRecord>;
+	outputDirs: Map<string, string>;
+	pendingStarts: Set<Promise<TaskRecord>>;
 	subscribers: Set<BashTaskUpdateListener>;
 	lastUpdateAt: number;
 	updateTimer: ReturnType<typeof setTimeout> | undefined;
+	closing: boolean;
 }
 
 type TaskRecord = BashTaskRecord;
@@ -135,10 +138,20 @@ type TaskRecord = BashTaskRecord;
 function createBashTaskStore(): BashTaskStore {
 	return {
 		tasks: new Map(),
+		outputDirs: new Map(),
+		pendingStarts: new Set(),
 		subscribers: new Set(),
 		lastUpdateAt: 0,
 		updateTimer: undefined,
+		closing: false,
 	};
+}
+
+async function removeTaskOutputDir(store: BashTaskStore, taskId: string): Promise<void> {
+	const outputDir = store.outputDirs.get(taskId);
+	if (!outputDir) return;
+	await rm(outputDir, { recursive: true, force: true });
+	store.outputDirs.delete(taskId);
 }
 
 function appendTail(task: TaskRecord, chunk: Buffer | string): void {
@@ -315,22 +328,39 @@ async function spawnTask(
 	description: string | undefined,
 ): Promise<TaskRecord> {
 	const taskId = `bash-${randomUUID()}`;
-	const outputDir = path.join(getAgentDir(), "background-tasks", taskId);
-	await mkdir(outputDir, { recursive: true });
+	const shell = resolveBashShell();
+	const wrappedCommand = `__pi_backgrounding_run() {\n${command}\n}\n__pi_backgrounding_run\n__pi_backgrounding_status=$?\nwait\nexit $__pi_backgrounding_status`;
+	const outputDir = await mkdtemp(path.join(tmpdir(), `pi-agentic-processes-bash-${taskId}-`));
+	store.outputDirs.set(taskId, outputDir);
+	if (store.closing) {
+		await removeTaskOutputDir(store, taskId);
+		throw new Error("Cannot start a Bash task while the manager is shutting down.");
+	}
 	const outputPath = path.join(outputDir, "output.log");
-	const stream = createWriteStream(outputPath, { flags: "a" });
+	let child: ChildProcess;
+	try {
+		child = spawn(shell.command, [...shell.args, wrappedCommand], {
+			cwd,
+			detached: true,
+			env: process.env,
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+	} catch (error) {
+		await removeTaskOutputDir(store, taskId);
+		throw error;
+	}
+	let stream: WriteStream;
+	try {
+		stream = createWriteStream(outputPath, { flags: "a" });
+	} catch (error) {
+		killProcessGroup(child);
+		await removeTaskOutputDir(store, taskId);
+		throw error;
+	}
 	let resolveCompletion!: (completion: TaskCompletion) => void;
 	const completion = new Promise<TaskCompletion>((resolve) => {
 		resolveCompletion = resolve;
-	});
-	const wrappedCommand = `__pi_backgrounding_run() {\n${command}\n}\n__pi_backgrounding_run\n__pi_backgrounding_status=$?\nwait\nexit $__pi_backgrounding_status`;
-	const shell = resolveBashShell();
-	const child = spawn(shell.command, [...shell.args, wrappedCommand], {
-		cwd,
-		detached: true,
-		env: process.env,
-		stdio: ["ignore", "pipe", "pipe"],
-		windowsHide: true,
 	});
 	const startedAt = Date.now();
 	const task: TaskRecord = {
@@ -447,29 +477,21 @@ function signalExitCode(signal: NodeJS.Signals | null): number {
 }
 
 function pruneCompletedTasks(store: BashTaskStore): void {
-	const completed = [...store.tasks.values()]
-		.filter((task) => task.status !== "running")
-		.sort((a, b) => a.startedAt - b.startedAt);
+	const completed = [...store.tasks.entries()]
+		.filter(([, task]) => task.status !== "running")
+		.sort(([, a], [, b]) => a.startedAt - b.startedAt);
 	while (completed.length > MAX_COMPLETED_TASKS) {
-		const task = completed.shift();
-		if (!task) break;
-		store.tasks.delete(task.taskId);
-		void rm(path.dirname(task.outputPath), { recursive: true, force: true });
+		const entry = completed.shift();
+		if (!entry) break;
+		const [taskId] = entry;
+		store.tasks.delete(taskId);
+		void removeTaskOutputDir(store, taskId).catch(() => undefined);
 	}
 }
 
 async function pruneOldTaskDirs(): Promise<void> {
-	const root = path.join(getAgentDir(), "background-tasks");
-	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
-	const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-	for (const entry of entries) {
-		if (!entry.isDirectory() || !entry.name.startsWith("bash-")) continue;
-		const dir = path.join(root, entry.name);
-		const s = await stat(dir).catch(() => null);
-		if (s && s.mtimeMs < cutoff) {
-			void rm(dir, { recursive: true, force: true });
-		}
-	}
+	// Retained for API compatibility. Task logs now live in the system temporary
+	// directory, so crash leftovers belong to the operating system's temp policy.
 }
 
 function formatDuration(ms: number): string {
@@ -659,7 +681,10 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 	};
 	return {
 		start(options) {
-			return spawnTask(
+			if (store.closing) {
+				return Promise.reject(new Error("Cannot start a Bash task while the manager is shutting down."));
+			}
+			const pending = spawnTask(
 				pi,
 				store,
 				options.command,
@@ -668,6 +693,12 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 				options.killAfterSeconds,
 				options.description,
 			);
+			store.pendingStarts.add(pending);
+			void pending.then(
+				() => store.pendingStarts.delete(pending),
+				() => store.pendingStarts.delete(pending),
+			);
+			return pending;
 		},
 		get(taskId) {
 			return store.tasks.get(taskId);
@@ -742,6 +773,8 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 		},
 		pruneOldTaskDirs,
 		async shutdown() {
+			store.closing = true;
+			await Promise.allSettled([...store.pendingStarts]);
 			for (const task of store.tasks.values()) {
 				if (task.status === "running") {
 					task.notifyOnCompletion = false;
@@ -749,11 +782,7 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 				}
 			}
 			await Promise.race([Promise.allSettled([...store.tasks.values()].map((task) => task.completion)), delay(2_000)]);
-			for (const task of store.tasks.values()) {
-				if (task.status !== "running") {
-					void rm(path.dirname(task.outputPath), { recursive: true, force: true });
-				}
-			}
+			await Promise.all([...store.outputDirs.keys()].map((taskId) => removeTaskOutputDir(store, taskId)));
 		},
 	};
 }

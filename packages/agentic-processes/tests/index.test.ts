@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, open, rm } from "node:fs/promises";
+import { mkdtemp, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +33,7 @@ const tempRoots: string[] = [];
 
 afterEach(async () => {
 	await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
 });
 
@@ -278,7 +279,9 @@ describe("agentic processes extension", () => {
 			throw new Error("broken async management observer");
 		});
 		const updates: string[] = [];
-		management.subscribe((snapshot) => updates.push(`${snapshot.kind}:${snapshot.id}:${snapshot.status}`));
+		management.subscribe((snapshot) => {
+			updates.push(`${snapshot.kind}:${snapshot.id}:${snapshot.status}`);
+		});
 
 		const bash = apiMock.getTool("bash").execute;
 		const monitorStart = apiMock.getTool("monitor_start").execute;
@@ -380,13 +383,78 @@ describe("agentic processes extension", () => {
 		expect(text(result)).toContain("hello");
 	});
 
+	it("spools Bash output to system temp and removes only its owned directory on shutdown", async () => {
+		const cwd = await tempCwd();
+		const unownedDir = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createBashTaskManager(apiMock.api);
+		const task = await manager.start({ command: "printf 'temporary\\n'", cwd, backgroundAfterSeconds: 0.01 });
+		await task.completion;
+
+		const outputPath = task.outputPath;
+		const logDir = dirname(outputPath);
+		expect(relative(tmpdir(), outputPath)).toMatch(/^pi-agentic-processes-bash-/);
+		await expect(stat(outputPath)).resolves.toBeDefined();
+		task.outputPath = join(unownedDir, "not-owned.log");
+		task.taskId = "bash-mutated-public-record";
+
+		await manager.shutdown();
+		await expect(stat(logDir)).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(stat(unownedDir)).resolves.toBeDefined();
+	});
+
+	it("does not allocate Bash or monitor output when shell resolution fails", async () => {
+		const tempRoot = await tempCwd();
+		const missingBash = join(tempRoot, "missing-bash");
+		vi.stubEnv("PI_BASH_PATH", missingBash);
+		vi.stubEnv("TMPDIR", tempRoot);
+		vi.stubEnv("TMP", tempRoot);
+		vi.stubEnv("TEMP", tempRoot);
+
+		const apiMock = createExtensionApiMock();
+		await expect(
+			createBashTaskManager(apiMock.api).start({
+				command: ":",
+				cwd: tempRoot,
+				backgroundAfterSeconds: 0.01,
+			}),
+		).rejects.toThrow(`Configured Bash path does not exist: ${missingBash}`);
+		expect(await readdir(tempRoot)).toEqual([]);
+
+		await expect(createMonitorManager(apiMock.api).start({ command: ":", inject: false }, tempRoot)).rejects.toThrow(
+			`Configured Bash path does not exist: ${missingBash}`,
+		);
+		expect(await readdir(tempRoot)).toEqual([]);
+	});
+
+	it("does not allow a Bash start to escape a concurrent shutdown", async () => {
+		const tempRoot = await tempCwd();
+		vi.stubEnv("TMPDIR", tempRoot);
+		vi.stubEnv("TMP", tempRoot);
+		vi.stubEnv("TEMP", tempRoot);
+
+		const apiMock = createExtensionApiMock();
+		const manager = createBashTaskManager(apiMock.api);
+		const starting = manager.start({ command: "sleep 30", cwd: tempRoot, backgroundAfterSeconds: 0.01 });
+		const rejectedStart = expect(starting).rejects.toThrow("manager is shutting down");
+
+		await manager.shutdown();
+		await rejectedStart;
+		expect(await readdir(tempRoot)).toEqual([]);
+		await expect(
+			manager.start({ command: ":", cwd: tempRoot, backgroundAfterSeconds: 0.01 }),
+		).rejects.toThrow("manager is shutting down");
+	});
+
 	it("exposes a UI-independent bash task manager API", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
 		installEventBus(apiMock);
 		const manager = createBashTaskManager(apiMock.api);
 		const updates: string[] = [];
-		const unsubscribe = manager.subscribe((snapshot) => updates.push(`${snapshot.taskId}:${snapshot.status}`));
+		const unsubscribe = manager.subscribe((snapshot) => {
+			updates.push(`${snapshot.taskId}:${snapshot.status}`);
+		});
 
 		const task = await manager.start({
 			command: "printf 'manager-ready\\n'; sleep 0.1; printf 'manager-done\\n'",
@@ -417,7 +485,9 @@ describe("agentic processes extension", () => {
 			throw new Error("broken async Bash observer");
 		});
 		const updates: string[] = [];
-		manager.subscribe((snapshot) => updates.push(snapshot.status));
+		manager.subscribe((snapshot) => {
+			updates.push(snapshot.status);
+		});
 
 		const task = await manager.start({
 			command: "printf 'observer-safe\\n'",
@@ -649,12 +719,45 @@ describe("agentic processes extension", () => {
 		});
 	});
 
+	it("removes monitor logs from system temp on shutdown", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createMonitorManager(apiMock.api);
+		const started = await manager.start({ command: "printf 'temporary\\n'", inject: false }, cwd);
+		const monitorId = monitorIdFrom(started);
+		await vi.waitFor(() => expect(manager.get(monitorId)?.liveTaskStatus).toBe("completed"));
+
+		const logDir = (manager.get(monitorId)?.details as { logDir?: string }).logDir;
+		if (!logDir) throw new Error("monitor log directory missing");
+		expect(relative(tmpdir(), logDir)).toMatch(/^pi-agentic-processes-monitor-/);
+		await expect(stat(logDir)).resolves.toBeDefined();
+
+		await manager.shutdown();
+		await expect(stat(logDir)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("stops an active monitor and removes its logs on shutdown", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createMonitorManager(apiMock.api);
+		const started = await manager.start({ command: "sleep 30", inject: false }, cwd);
+		const monitorId = monitorIdFrom(started);
+		const logDir = (manager.get(monitorId)?.details as { logDir?: string }).logDir;
+		if (!logDir) throw new Error("monitor log directory missing");
+
+		await manager.shutdown();
+		await expect(stat(logDir)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(manager.get(monitorId)).toBeUndefined();
+	});
+
 	it("exposes a UI-independent monitor manager API", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();
 		const manager = createMonitorManager(apiMock.api);
 		const updates: string[] = [];
-		const unsubscribe = manager.subscribe((snapshot) => updates.push(`${snapshot.id}:${snapshot.liveTaskStatus}`));
+		const unsubscribe = manager.subscribe((snapshot) => {
+			updates.push(`${snapshot.id}:${snapshot.liveTaskStatus}`);
+		});
 
 		const started = await manager.start(
 			{ command: "printf 'MANAGER_READY\\n'; sleep 30", inject: false, name: "manager-monitor" },
@@ -699,23 +802,23 @@ describe("agentic processes extension", () => {
 		},
 	);
 
-	it.skipIf(process.platform === "win32")(
-		"reuses a pending monitor stop dispatch during shutdown",
-		async () => {
-			const cwd = await tempCwd();
-			const apiMock = createExtensionApiMock();
-			const manager = createMonitorManager(apiMock.api);
-			const started = await manager.start({ command: "sleep 30", inject: false, name: "shutdown-race" }, cwd);
-			const monitorId = monitorIdFrom(started);
-			const kill = vi.spyOn(process, "kill");
+	it("waits for a pending monitor stop before removing logs during shutdown", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		const manager = createMonitorManager(apiMock.api);
+		const started = await manager.start({ command: "sleep 30", inject: false, name: "shutdown-race" }, cwd);
+		const monitorId = monitorIdFrom(started);
+		const logDir = (manager.get(monitorId)?.details as { logDir?: string }).logDir;
+		if (!logDir) throw new Error("monitor log directory missing");
 
-			const stopping = manager.stop({ id: monitorId, reason: "normal stop" });
-			manager.shutdown();
-			await stopping;
+		const stopping = manager.stop({ id: monitorId, reason: "normal stop" });
+		const shuttingDown = manager.shutdown();
+		const [stopped] = await Promise.all([stopping, shuttingDown]);
+		const details = stopped.details as { logWriteErrorCount?: number };
 
-			expect(kill).toHaveBeenCalledTimes(1);
-		},
-	);
+		expect(details.logWriteErrorCount).toBe(0);
+		await expect(stat(logDir)).rejects.toMatchObject({ code: "ENOENT" });
+	});
 
 	it("isolates throwing monitor subscribers from process lifecycle and other observers", async () => {
 		const cwd = await tempCwd();
@@ -729,7 +832,9 @@ describe("agentic processes extension", () => {
 			throw new Error("broken async monitor observer");
 		});
 		const updates: string[] = [];
-		manager.subscribe((snapshot) => updates.push(snapshot.liveTaskStatus));
+		manager.subscribe((snapshot) => {
+			updates.push(snapshot.liveTaskStatus);
+		});
 
 		const started = await manager.start({ command: "printf 'observer-safe\\n'", inject: false }, cwd);
 		const monitorId = monitorIdFrom(started);
@@ -745,7 +850,7 @@ describe("agentic processes extension", () => {
 				),
 			);
 		});
-		manager.shutdown();
+		await manager.shutdown();
 	});
 
 	it("supports monitor start, status, list, log tail, and stop flows", async () => {

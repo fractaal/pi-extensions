@@ -18,9 +18,11 @@ Registered tools:
 - `monitor_list`
 - `monitor_stop`
 
-Current behavior is intentionally parity-first: process execution, output logs,
-foreground/background timing, monitor guardrails, and stop semantics stay
-compatible with the original personal Pi hooks.
+Process execution, foreground/background timing, monitor guardrails, and stop
+semantics remain compatible with the original personal Pi hooks. Bash and monitor
+output is spooled beneath the operating system's temporary directory, retained
+while the owning Pi session can inspect it, and removed on graceful session
+shutdown. The package does not recover processes or logs after a Pi restart.
 
 ## Headless management API
 

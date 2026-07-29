@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -179,14 +179,19 @@ function formatBytes(bytes: number) {
 }
 
 function createMonitorLogFiles(id: string) {
-	const logDir = mkdtempSync(path.join(tmpdir(), `pi-monitor-${id}-`));
+	const logDir = mkdtempSync(path.join(tmpdir(), `pi-agentic-processes-monitor-${id}-`));
 	const combinedLogPath = path.join(logDir, "combined.log");
 	const stdoutLogPath = path.join(logDir, "stdout.log");
 	const stderrLogPath = path.join(logDir, "stderr.log");
 	const metadataPath = path.join(logDir, "meta.json");
-	writeFileSync(combinedLogPath, "", { flag: "wx" });
-	writeFileSync(stdoutLogPath, "", { flag: "wx" });
-	writeFileSync(stderrLogPath, "", { flag: "wx" });
+	try {
+		writeFileSync(combinedLogPath, "", { flag: "wx" });
+		writeFileSync(stdoutLogPath, "", { flag: "wx" });
+		writeFileSync(stderrLogPath, "", { flag: "wx" });
+	} catch (error) {
+		removeMonitorLogDir(logDir);
+		throw error;
+	}
 	return {
 		logDir,
 		combinedLogPath,
@@ -198,6 +203,14 @@ function createMonitorLogFiles(id: string) {
 
 function closeMonitorLogFiles(_monitor: Monitor) {
 	// Log files are written synchronously so output is immediately available to read.
+}
+
+function removeMonitorLogDir(logDir: string) {
+	try {
+		rmSync(logDir, { recursive: true, force: true });
+	} catch {
+		// System temp cleanup remains the fallback after an abnormal filesystem error.
+	}
 }
 
 function pushDeliveryError(monitor: Monitor, entry: LineEntry) {
@@ -624,11 +637,11 @@ async function stopMonitor(
 		.then(() => {
 			monitor.stopRequested = true;
 			monitor.stopReason = reason;
-			enqueueLine(pi, monitor, "monitor", `sent ${signal}`);
+			if (!monitor.shutdown) enqueueLine(pi, monitor, "monitor", `sent ${signal}`);
 		})
 		.catch((error) => {
 			const message = error instanceof Error ? error.message : String(error);
-			enqueueLine(pi, monitor, "monitor", `failed to send ${signal}: ${message}`);
+			if (!monitor.shutdown) enqueueLine(pi, monitor, "monitor", `failed to send ${signal}: ${message}`);
 			throw new Error(`Failed to send ${signal} to monitor ${monitor.id}: ${message}`, { cause: error });
 		});
 	monitor.stopDispatch = dispatch;
@@ -744,6 +757,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 	const monitors = new Map<string, Monitor>();
 	const subscribers = new Set<MonitorUpdateListener>();
 	let latestStatusCtx: StatusUiContext | undefined;
+	let shutdownPromise: Promise<void> | undefined;
 
 	function emitMonitorUpdate(monitor: Monitor): void {
 		emitToSubscribers(subscribers, monitorSnapshot(monitor), "monitor");
@@ -788,15 +802,27 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 		ui.setStatus("monitor", status ? colorMonitorStatus(statusCtx, status) : undefined);
 	}
 
-	function cleanupAll() {
-		for (const monitor of monitors.values()) {
-			monitor.shutdown = true;
-			if (monitor.flushTimer) clearTimeout(monitor.flushTimer);
-			monitor.stdoutReader?.close();
-			monitor.stderrReader?.close();
-			writeMonitorMetadata(monitor);
-			closeMonitorLogFiles(monitor);
-			if (monitor.status === "running" && monitor.process.pid && !monitor.stopRequested && !monitor.stopDispatch) {
+	function cleanupAll(): Promise<void> {
+		if (shutdownPromise) return shutdownPromise;
+		shutdownPromise = (async () => {
+			const ownedMonitors = [...monitors.values()];
+			for (const monitor of ownedMonitors) {
+				monitor.shutdown = true;
+				if (monitor.flushTimer) clearTimeout(monitor.flushTimer);
+				monitor.stdoutReader?.close();
+				monitor.stderrReader?.close();
+				writeMonitorMetadata(monitor);
+				closeMonitorLogFiles(monitor);
+			}
+
+			const dispatches: Promise<void>[] = [];
+			for (const monitor of ownedMonitors) {
+				if (monitor.status !== "running" || !monitor.process.pid) continue;
+				if (monitor.stopDispatch) {
+					dispatches.push(monitor.stopDispatch.catch(() => undefined));
+					continue;
+				}
+				if (monitor.stopRequested) continue;
 				const dispatch = killProcessTree(monitor.process.pid, "SIGTERM")
 					.then(() => {
 						monitor.stopRequested = true;
@@ -804,27 +830,39 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 					})
 					.catch(() => undefined);
 				monitor.stopDispatch = dispatch;
-				void dispatch.finally(() => {
-					if (monitor.stopDispatch === dispatch) monitor.stopDispatch = undefined;
-				});
+				dispatches.push(
+					dispatch.finally(() => {
+						if (monitor.stopDispatch === dispatch) monitor.stopDispatch = undefined;
+					}),
+				);
 			}
-		}
-		monitors.clear();
+			await Promise.allSettled(dispatches);
+			for (const monitor of ownedMonitors) removeMonitorLogDir(monitor.logDir);
+			monitors.clear();
+		})();
+		return shutdownPromise;
 	}
 
 	return {
 		async start(params, baseCwd, statusCtx) {
+			if (shutdownPromise) throw new Error("Cannot start a monitor while the manager is shutting down.");
 			rememberUi(statusCtx);
 			const id = randomUUID().slice(0, 8);
 			const cwd = resolveCwd(baseCwd, params.cwd);
-			const logs = createMonitorLogFiles(id);
 			const shell = resolveBashShell();
-			const child = spawn(shell.command, [...shell.args, String(params.command)], {
-				cwd,
-				detached: true,
-				env: process.env,
-				stdio: ["ignore", "pipe", "pipe"],
-			}) as ChildProcessWithoutNullStreams;
+			const logs = createMonitorLogFiles(id);
+			let child: ChildProcessWithoutNullStreams;
+			try {
+				child = spawn(shell.command, [...shell.args, String(params.command)], {
+					cwd,
+					detached: true,
+					env: process.env,
+					stdio: ["ignore", "pipe", "pipe"],
+				}) as ChildProcessWithoutNullStreams;
+			} catch (error) {
+				removeMonitorLogDir(logs.logDir);
+				throw error;
+			}
 
 			const monitor: Monitor = {
 				id,
@@ -880,12 +918,13 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			child.on("error", (error) => {
 				monitor.status = "error";
 				monitor.exitedAt = new Date().toISOString();
+				if (monitor.shutdown) return;
 				enqueueLine(pi, monitor, "monitor", `failed to start: ${error.message}`);
 				flushPending(pi, monitor);
 				writeMonitorMetadata(monitor);
 				closeMonitorLogFiles(monitor);
 				emitMonitorUpdate(monitor);
-				if (!monitor.shutdown) updateMonitorStatus(statusCtx);
+				updateMonitorStatus(statusCtx);
 			});
 
 			child.on("close", async (code, signal) => {
@@ -896,12 +935,13 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 				monitor.exitedAt = new Date().toISOString();
 				monitor.exitCode = code;
 				monitor.signal = signal;
+				if (monitor.shutdown) return;
 				enqueueLine(pi, monitor, "monitor", `exited with code ${code ?? "null"}${signal ? ` signal ${signal}` : ""}`);
 				flushPending(pi, monitor);
 				writeMonitorMetadata(monitor);
 				closeMonitorLogFiles(monitor);
 				emitMonitorUpdate(monitor);
-				if (!monitor.shutdown) updateMonitorStatus(statusCtx);
+				updateMonitorStatus(statusCtx);
 			});
 
 			return {
@@ -1056,8 +1096,8 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			subscribers.add(listener);
 			return () => subscribers.delete(listener);
 		},
-		shutdown() {
-			cleanupAll();
+		async shutdown() {
+			await cleanupAll();
 			latestStatusCtx = undefined;
 		},
 		clearStatus(ctx) {
@@ -1073,7 +1113,7 @@ export function registerMonitorExtension(pi: ExtensionAPI): MonitorManager {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		unsubscribeAriaLocalUpdates();
 		manager.clearStatus(ctx);
-		manager.shutdown();
+		await manager.shutdown();
 	});
 
 	pi.registerTool({
