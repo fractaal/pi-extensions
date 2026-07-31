@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-claude-bridge",
-  "version": "1.6.3-fractal.0",
+  "version": "1.6.4-fractal.0",
   "description": "Pi provider bridge that runs Claude Code through the Claude Agent SDK.",
   "type": "module",
   "keywords": [
@@ -14,7 +14,11 @@
   "main": "./bundle/index.js",
   "exports": {
     ".": "./bundle/index.js",
-    "./isolated": "./bundle/isolated.js",
+    "./isolated": {
+      "types": "./isolated.d.ts",
+      "import": "./bundle/isolated.js",
+      "default": "./bundle/isolated.js"
+    },
     "./executable-resolution": {
       "types": "./dist/executable-resolution.d.ts",
       "import": "./dist/executable-resolution.js"
@@ -205,6 +209,7 @@
     "assets/",
     "LICENSE",
     "README.md",
+    "isolated.d.ts",
     "package.json"
   ],
   "repository": {

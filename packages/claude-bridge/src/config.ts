@@ -48,8 +48,8 @@ function expandHome(input: string): string {
 	return input;
 }
 
-function piUserDir(): string {
-	return resolve(expandHome(process.env.PI_CODING_AGENT_DIR?.trim() || "~/.pi/agent"));
+export function resolvePiUserDir(userDir?: string): string {
+	return resolve(expandHome(userDir?.trim() || process.env.PI_CODING_AGENT_DIR?.trim() || "~/.pi/agent"));
 }
 
 function asRecord(value: unknown): SettingsRecord | undefined {
@@ -111,8 +111,8 @@ function projectSettingsTrusted(settingsPath: string): boolean {
 }
 
 
-function settingsPaths(cwd: string): string[] {
-	const user = join(piUserDir(), "settings.json");
+function settingsPaths(cwd: string, userDir?: string): string[] {
+	const user = join(resolvePiUserDir(userDir), "settings.json");
 	const project = projectSettingsPath(cwd);
 	return projectSettingsTrusted(project) ? [user, project] : [user];
 }
@@ -128,9 +128,9 @@ export function tryParseJson(path: string): Partial<Config> {
 	}
 }
 
-function readManagerConfig(cwd: string): SettingsRecord {
+function readManagerConfig(cwd: string, userDir?: string): SettingsRecord {
 	const merged: SettingsRecord = {};
-	for (const path of settingsPaths(cwd)) {
+	for (const path of settingsPaths(cwd, userDir)) {
 		if (!existsSync(path)) continue;
 		try {
 			const parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -240,12 +240,12 @@ function managerToConfig(raw: SettingsRecord): Partial<Config> {
 	};
 }
 
-export function loadConfig(cwd: string): Config {
-	const global = tryParseJson(join(piUserDir(), "claude-bridge.json"));
+export function loadConfig(cwd: string, userDir?: string): Config {
+	const global = tryParseJson(join(resolvePiUserDir(userDir), "claude-bridge.json"));
 	const projectSettings = projectSettingsPath(cwd);
 	const trustedProject = projectSettingsTrusted(projectSettings);
 	const project = trustedProject ? tryParseJson(join(dirname(projectSettings), "claude-bridge.json")) : {};
-	const manager = managerToConfig(readManagerConfig(cwd));
+	const manager = managerToConfig(readManagerConfig(cwd, userDir));
 	const provider = normalizeProviderConfig({ ...global.provider, ...project.provider, ...manager.provider });
 	return {
 		enabled: manager.enabled ?? project.enabled ?? global.enabled ?? true,

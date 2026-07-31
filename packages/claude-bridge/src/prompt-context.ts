@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { resolvePiUserDir } from "./config.js";
 
 export interface PromptContextSettings {
 	includeAppendSystemPromptMd?: boolean;
@@ -12,12 +12,6 @@ export interface PromptContextSettings {
 export interface PromptContextAppend {
 	text?: string;
 	labels: string[];
-}
-
-function piUserDir(): string {
-	const configured = process.env.PI_CODING_AGENT_DIR?.trim();
-	if (configured) return resolve(configured.replace(/^~(?=\/|$)/, homedir()));
-	return join(homedir(), ".pi", "agent");
 }
 
 function readTrimmed(path: string): string | undefined {
@@ -42,9 +36,9 @@ function findProjectAppendSystem(startDir: string): string | undefined {
 	return undefined;
 }
 
-export function readAppendSystemPromptFiles(cwd: string): Array<{ label: string; content: string }> {
+export function readAppendSystemPromptFiles(cwd: string, userDir?: string): Array<{ label: string; content: string }> {
 	const files: Array<{ label: string; path: string }> = [
-		{ label: "global APPEND_SYSTEM.md", path: join(piUserDir(), "APPEND_SYSTEM.md") },
+		{ label: "global APPEND_SYSTEM.md", path: join(resolvePiUserDir(userDir), "APPEND_SYSTEM.md") },
 	];
 	const projectPath = findProjectAppendSystem(cwd);
 	if (projectPath) files.push({ label: "project .pi/APPEND_SYSTEM.md", path: projectPath });
@@ -94,12 +88,12 @@ function extractBlockByMarkers(systemPrompt: string | undefined, markers: RegExp
 	return undefined;
 }
 
-export function buildPromptContextAppend(systemPrompt: string | undefined, cwd: string, settings: PromptContextSettings): PromptContextAppend {
+export function buildPromptContextAppend(systemPrompt: string | undefined, cwd: string, settings: PromptContextSettings, userDir?: string): PromptContextAppend {
 	const parts: string[] = [];
 	const labels: string[] = [];
 
 	if (settings.includeAppendSystemPromptMd) {
-		for (const file of readAppendSystemPromptFiles(cwd)) {
+		for (const file of readAppendSystemPromptFiles(cwd, userDir)) {
 			parts.push(xmlBlock("append_system_prompt", { label: file.label }, file.content));
 			labels.push(file.label);
 		}

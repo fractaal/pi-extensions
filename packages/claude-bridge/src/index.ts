@@ -507,15 +507,17 @@ interface BridgeRuntimeState {
 	piUI: ExtensionUIContext | undefined;
 	extraUsageHelperInFlight: Promise<string> | null;
 	query: QueryRuntimeState;
+	userDir: string | undefined;
 }
 
-function createBridgeRuntimeState(): BridgeRuntimeState {
+function createBridgeRuntimeState(userDir?: string): BridgeRuntimeState {
 	return {
 		sharedSession: null,
 		extensionApi: undefined,
 		piUI: undefined,
 		extraUsageHelperInFlight: null,
 		query: createQueryRuntimeState(),
+		userDir,
 	};
 }
 
@@ -524,6 +526,10 @@ const bridgeRuntimeStorage = new AsyncLocalStorage<BridgeRuntimeState>();
 
 function bridgeRuntime(): BridgeRuntimeState {
 	return bridgeRuntimeStorage.getStore() ?? defaultBridgeRuntime;
+}
+
+function loadBridgeConfig(cwd: string): Config {
+	return loadConfig(cwd, bridgeRuntime().userDir);
 }
 
 function runWithBridgeRuntime<T>(runtime: BridgeRuntimeState, callback: () => T): T {
@@ -750,7 +756,7 @@ function sdkTextFromMessage(message: SDKMessage): string | undefined {
 	return undefined;
 }
 
-async function runExtraUsageHelper(cwd: string, config = loadConfig(cwd)): Promise<string> {
+async function runExtraUsageHelper(cwd: string, config = loadBridgeConfig(cwd)): Promise<string> {
 	const providerSettings = config.provider ?? {};
 	const claudeExecutable = resolveClaudeCodeExecutable({ configuredPath: providerSettings.pathToClaudeCodeExecutable })?.executablePath;
 	if (claudeExecutable) preflightClaudeExecutable(claudeExecutable, cwd);
@@ -1897,14 +1903,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		? wrapPromptStream(promptBlocks)
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, ctx());
-	const bridgeConfig = loadConfig(cwd);
+	const bridgeConfig = loadBridgeConfig(cwd);
 	const providerSettings = bridgeConfig.provider ?? {};
 	const systemPromptMode = providerSettings.systemPromptMode ?? "claude-code";
 	const appendSystemPrompt = systemPromptMode === "claude-code" && providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
 	const promptContextAppend = systemPromptMode === "claude-code"
-		? buildPromptContextAppend(context.systemPrompt, cwd, bridgeConfig.promptContext ?? {})
+		? buildPromptContextAppend(context.systemPrompt, cwd, bridgeConfig.promptContext ?? {}, bridgeRuntime().userDir)
 		: { text: undefined, labels: [] };
 	const appendParts = [agentsAppend, skillsAppend, promptContextAppend.text].filter((part): part is string => Boolean(part));
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
@@ -2202,7 +2208,7 @@ async function tryOpenExtensionManagerSettings(ctx: { ui: ExtensionUIContext }):
 }
 
 function showBridgeStatus(ctx: { ui: ExtensionUIContext; cwd?: string }): void {
-	const config = loadConfig(commandCwd(ctx));
+	const config = loadBridgeConfig(commandCwd(ctx));
 	ctx.ui.notify([
 		`Claude bridge: ${config.enabled === false ? "disabled" : "enabled"}`,
 		`Extra usage auto-helper: ${extraUsageAllowed(config) ? "on" : "off"} (settings)`,
@@ -2252,8 +2258,12 @@ function registerBridgeCommands(pi: ExtensionAPI, run: RunInBridgeRuntime): void
 
 // --- Extension registration ---
 
-export default function (pi: ExtensionAPI) {
-	const runtime = createBridgeRuntimeState();
+export interface ClaudeBridgeExtensionOptions {
+	userDir?: string;
+}
+
+function registerClaudeBridge(pi: ExtensionAPI, userDir?: string) {
+	const runtime = createBridgeRuntimeState(userDir);
 	const run: RunInBridgeRuntime = callback => runWithBridgeRuntime(runtime, callback);
 	const boundStream = ((model: Model<any>, context: Context, options?: SimpleStreamOptions) =>
 		run(() => streamClaudeAgentSdk(model, context, options))) as typeof streamClaudeAgentSdk;
@@ -2263,7 +2273,7 @@ export default function (pi: ExtensionAPI) {
 		// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 		process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
-		const config = loadConfig(process.cwd());
+		const config = loadBridgeConfig(process.cwd());
 		debug("loadConfig:", JSON.stringify(config));
 		registerBridgeCommands(pi, run);
 		if (config.enabled === false) {
@@ -2330,3 +2340,9 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 }
+
+export function createClaudeBridgeExtension(options: ClaudeBridgeExtensionOptions = {}) {
+	return (pi: ExtensionAPI) => registerClaudeBridge(pi, options.userDir);
+}
+
+export default createClaudeBridgeExtension();

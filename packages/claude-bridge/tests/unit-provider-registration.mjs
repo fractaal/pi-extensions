@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
@@ -48,5 +51,31 @@ describe("provider state ownership", () => {
 		assert.equal(parent.providers.length, 1);
 		assert.equal(child.providers.length, 0);
 		assert.equal(globalThis[ACTIVE_STREAM_SIMPLE_KEY], parent.providers[0].config.streamSimple);
+	});
+
+	it("uses an explicit user directory without mutating the inherited Pi profile", async () => {
+		const root = mkdtempSync(join(tmpdir(), "claude-bridge-user-dir-"));
+		const inherited = join(root, "standalone-pi");
+		const explicit = join(root, "aria-local");
+		const previous = process.env.PI_CODING_AGENT_DIR;
+		try {
+			mkdirSync(inherited, { recursive: true });
+			mkdirSync(explicit, { recursive: true });
+			writeFileSync(join(explicit, "settings.json"), JSON.stringify({
+				vstack: { extensionManager: { config: { "@fractaal/pi-claude-bridge": { enabled: false } } } },
+			}));
+			process.env.PI_CODING_AGENT_DIR = inherited;
+			const isolated = await import(`../bundle/isolated.js?test=${Math.random()}`);
+			const runtime = createPi();
+
+			isolated.createClaudeBridgeExtension({ userDir: explicit })(runtime.pi);
+
+			assert.equal(runtime.providers.length, 0);
+			assert.equal(process.env.PI_CODING_AGENT_DIR, inherited);
+		} finally {
+			if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previous;
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
