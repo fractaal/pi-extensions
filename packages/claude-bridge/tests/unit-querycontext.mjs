@@ -31,22 +31,30 @@ describe("QueryContext class", () => {
 	it("resetTurnState preserves active tool tracking across result-delivery callbacks", () => {
 		ctx().turnToolCallIds = ["id1", "id2"];
 		ctx().recordToolCall("id1", "read", { path: "a" });
+		ctx().assistantMessageId = "msg-1";
+		ctx().markToolCallEmitted("id1");
 		ctx().markToolResultDelivered("id1");
 		ctx().resetTurnState(fakeModel);
 
 		assert.deepStrictEqual(ctx().turnToolCallIds, ["id1", "id2"]);
 		assert.deepStrictEqual(ctx().turnToolCalls.map((call) => call.id), ["id1"]);
+		assert.equal(ctx().assistantMessageId, "msg-1");
+		assert.ok(ctx().emittedToolCallIds.has("id1"));
 		assert.ok(ctx().deliveredToolResultIds.has("id1"));
 	});
 
 	it("resetToolTracking clears tool-call matching state for a new assistant message", () => {
 		ctx().recordToolCall("id1", "read", { path: "a" });
+		ctx().assistantMessageId = "msg-1";
+		ctx().markToolCallEmitted("id1");
 		ctx().markToolResultDelivered("id1");
 		ctx().markToolResultResolved("id1");
 		ctx().resetToolTracking();
 
 		assert.deepStrictEqual(ctx().turnToolCallIds, []);
 		assert.deepStrictEqual(ctx().turnToolCalls, []);
+		assert.equal(ctx().assistantMessageId, null);
+		assert.strictEqual(ctx().emittedToolCallIds.size, 0);
 		assert.strictEqual(ctx().deliveredToolResultIds.size, 0);
 		assert.strictEqual(ctx().resolvedToolResultIds.size, 0);
 	});

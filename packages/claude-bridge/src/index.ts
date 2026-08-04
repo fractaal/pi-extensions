@@ -1394,6 +1394,28 @@ function ensureTurnStarted(): void {
 	}
 }
 
+export function flushUnemittedToolCalls(): boolean {
+	const c = ctx();
+	const calls = c.unemittedToolCalls();
+	if (!c.currentPiStream || !c.turnOutput || c.reportedToolResultMismatch || calls.length === 0) return false;
+
+	ensureTurnStarted();
+	for (const call of calls) {
+		const block = { type: "toolCall" as const, id: call.id, name: call.toolName, arguments: call.arguments };
+		c.turnBlocks.push(block);
+		const contentIndex = c.turnBlocks.length - 1;
+		c.currentPiStream.push({ type: "toolcall_start", contentIndex, partial: c.turnOutput });
+		c.currentPiStream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: c.turnOutput });
+		c.markToolCallEmitted(call.id);
+	}
+	c.turnSawToolCall = true;
+	c.turnOutput.stopReason = "toolUse";
+	c.currentPiStream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
+	c.currentPiStream.end();
+	c.currentPiStream = null;
+	return true;
+}
+
 function finalizeCurrentStream(stopReason?: string): void {
 	if (!ctx().currentPiStream || !ctx().turnOutput) return;
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: ctx().turnOutput!.stopReason, error: ctx().turnOutput!.errorMessage})}`);
@@ -1429,11 +1451,15 @@ export function processStreamEvent(
 	}
 
 	if (event?.type === "message_start") {
-		c.resetToolTracking();
+		if (event.message?.id !== c.assistantMessageId) {
+			c.resetToolTracking();
+			c.assistantMessageId = event.message?.id ?? null;
+		}
 		updateTurnOutputModel(event.message?.model);
 		if (event.message?.usage) updateUsage(c.turnOutput, event.message.usage, model);
 		return;
 	}
+	if (c.reportedToolResultMismatch) return;
 
 	if (event?.type === "content_block_start") {
 		c.turnSawStreamEvent = true;
@@ -1508,6 +1534,7 @@ export function processStreamEvent(
 			c.updateToolCallArgs(block.id, block.arguments);
 			delete block.partialJson;
 			c.currentPiStream!.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
+			c.markToolCallEmitted(block.id);
 		}
 		return;
 	}
@@ -1554,11 +1581,12 @@ function appendMissingToolUsesFromAssistant(
 	let sawToolUse = false;
 	for (const block of assistantMsg.content) {
 		if (block.type !== "tool_use") continue;
-		sawToolUse = true;
 		const existingIdx = c.turnBlocks.findIndex((b: any) => b.type === "toolCall" && b.id === block.id);
 		const name = mapToolName(block.name, customToolNameToPi);
 		const mappedArgs = mapToolArgs(name, block.input);
 		c.recordToolCall(block.id, name, mappedArgs);
+		if (c.emittedToolCallIds.has(block.id)) continue;
+		sawToolUse = true;
 		if (existingIdx >= 0) {
 			const existing = c.turnBlocks[existingIdx] as any;
 			existing.name = name;
@@ -1567,7 +1595,10 @@ function appendMissingToolUsesFromAssistant(
 			if ("partialJson" in existing) {
 				delete existing.partialJson;
 				delete existing.index;
-				c.currentPiStream?.push({ type: "toolcall_end", contentIndex: existingIdx, toolCall: existing, partial: c.turnOutput });
+				if (c.currentPiStream) {
+					c.currentPiStream.push({ type: "toolcall_end", contentIndex: existingIdx, toolCall: existing, partial: c.turnOutput });
+					c.markToolCallEmitted(existing.id);
+				}
 			}
 			continue;
 		}
@@ -1580,8 +1611,11 @@ function appendMissingToolUsesFromAssistant(
 		});
 		const idx = c.turnBlocks.length - 1;
 		const toolBlock = c.turnBlocks[idx];
-		c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
-		c.currentPiStream?.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: c.turnOutput });
+		if (c.currentPiStream) {
+			c.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
+			c.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: c.turnOutput });
+			c.markToolCallEmitted(block.id);
+		}
 	}
 	if (assistantMsg.usage && c.turnOutput) updateUsage(c.turnOutput, assistantMsg.usage, model);
 	return sawToolUse;
@@ -1592,7 +1626,9 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
 	updateTurnOutputModel(assistantMsg.model);
-	if (c.turnSawStreamEvent) {
+	const assistantMessageId = typeof assistantMsg.id === "string" ? assistantMsg.id : null;
+	if (c.reportedToolResultMismatch && assistantMessageId === c.assistantMessageId) return;
+	if (c.turnSawStreamEvent || (assistantMessageId !== null && assistantMessageId === c.assistantMessageId)) {
 		// Claude Agent SDK can yield the completed assistant message before (or
 		// instead of) a stream_event message_stop for a tool-use turn. Treat that
 		// assistant message as a hard turn boundary so Pi executes the tool calls
@@ -1612,6 +1648,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 		return;
 	}
 	c.resetToolTracking();
+	c.assistantMessageId = assistantMessageId;
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}`);
 	for (const block of assistantMsg.content) {
 		if (block.type === "text" && block.text) {
@@ -1641,8 +1678,11 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 			});
 			const idx = c.turnBlocks.length - 1;
 			const toolBlock = c.turnBlocks[idx];
-			c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: c.turnOutput });
+			if (c.currentPiStream) {
+				c.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
+				c.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: c.turnOutput });
+				c.markToolCallEmitted(block.id);
+			}
 		} else if (block.type === "fallback") {
 			updateTurnOutputModel(block.to?.model);
 		} else {
@@ -1765,7 +1805,7 @@ async function consumeQuery(
 
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
-function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+export function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const runtime = bridgeRuntime();
 	const run: RunInBridgeRuntime = callback => runWithBridgeRuntime(runtime, callback);
 	const stream = newAssistantMessageEventStream();
@@ -1820,7 +1860,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			queryCtx.pendingToolCalls.clear();
 			reportToolResultMismatch(queryCtx, "unmatched tool result", cwd);
 		}
-		if (queryCtx.pendingToolCalls.size > 0) {
+		const flushedLateToolCalls = unmatchedResultIds.length === 0 && flushUnemittedToolCalls();
+		if (flushedLateToolCalls) debug(`provider: emitted late tool calls on result-delivery stream`);
+		else if (queryCtx.pendingToolCalls.size > 0) {
 			debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
 			bridgeRuntime().piUI?.notify(`Claude bridge: ${queryCtx.pendingToolCalls.size} tool handler(s) still waiting — provider may be stuck`, "warning");
 		}
