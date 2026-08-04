@@ -126,10 +126,15 @@ describe("assistant tool-use boundary fallback", () => {
 		assert.deepEqual(c.unemittedToolCalls(), []);
 	});
 
-	it("does not emit unseen calls after an unmatched result stops delivery", () => {
+	it("terminates the active query and suppresses new-message calls after an unmatched result", async () => {
 		const c = ctx();
 		c.resetTurnState(model);
-		c.activeQuery = {};
+		let interrupted = false;
+		let closed = false;
+		c.activeQuery = {
+			interrupt() { interrupted = true; return Promise.resolve(); },
+			close() { closed = true; },
+		};
 		c.assistantMessageId = "msg-1";
 		c.recordToolCall("call-b", "write", { path: "out.txt", content: "ok" });
 		let stoppedResult;
@@ -139,16 +144,25 @@ describe("assistant tool-use boundary fallback", () => {
 			{ role: "assistant", content: [{ type: "toolCall", id: "other", name: "read", arguments: {} }] },
 			{ role: "toolResult", toolCallId: "unknown", content: "unexpected" },
 		] });
+		const stoppedEvents = [];
+		for await (const event of stoppedStream) stoppedEvents.push(event);
+
 		const names = new Map([["mcp__custom-tools__write", "write"]]);
-		processAssistantMessage({ type: "assistant", message: { id: "msg-1", content: [
-			{ type: "tool_use", id: "call-b", name: "mcp__custom-tools__write", input: { file_path: "out.txt", content: "ok" } },
+		c.resetTurnState(model);
+		const lateEvents = installFakeStream();
+		processStreamEvent({ type: "stream_event", event: { type: "message_start", message: { id: "msg-2" } } }, names, model);
+		processStreamEvent({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "post-mismatch-write", name: "mcp__custom-tools__write", input: {} } } }, names, model);
+		processAssistantMessage({ type: "assistant", message: { id: "msg-2", content: [
+			{ type: "tool_use", id: "post-mismatch-write", name: "mcp__custom-tools__write", input: { file_path: "out.txt", content: "bad" } },
 		] } }, model, names);
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "call-b", name: "mcp__custom-tools__write", input: {} } } }, names, model);
 
 		assert.equal(stoppedResult.isError, true);
-		assert.strictEqual(c.currentPiStream, stoppedStream);
-		assert.equal(c.emittedToolCallIds.has("call-b"), false);
-		assert.deepEqual(c.unemittedToolCalls().map((call) => call.id), ["call-b"]);
+		assert.equal(interrupted, true);
+		assert.equal(closed, true);
+		assert.deepEqual(stoppedEvents.map((event) => event.type), ["error"]);
+		assert.deepEqual(lateEvents, []);
+		assert.equal(c.reportedToolResultMismatch, true);
+		assert.equal(c.emittedToolCallIds.has("post-mismatch-write"), false);
 	});
 
 	it("ignores a late bare message_stop so the next assistant fallback still renders text", () => {

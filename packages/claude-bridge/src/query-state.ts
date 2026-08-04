@@ -138,7 +138,6 @@ export class QueryContext {
 		this.deliveredToolResultIds.clear();
 		this.resolvedToolResultIds.clear();
 		this.unmatchedToolResultIds.clear();
-		this.reportedToolResultMismatch = false;
 	}
 
 	recordToolCall(id: string | undefined, toolName: string, args: Record<string, unknown> = {}): void {

@@ -43,9 +43,10 @@ describe("QueryContext class", () => {
 		assert.ok(ctx().deliveredToolResultIds.has("id1"));
 	});
 
-	it("resetToolTracking clears tool-call matching state for a new assistant message", () => {
+	it("resetToolTracking clears message matching state but preserves a terminal query mismatch", () => {
 		ctx().recordToolCall("id1", "read", { path: "a" });
 		ctx().assistantMessageId = "msg-1";
+		ctx().reportedToolResultMismatch = true;
 		ctx().markToolCallEmitted("id1");
 		ctx().markToolResultDelivered("id1");
 		ctx().markToolResultResolved("id1");
@@ -54,6 +55,7 @@ describe("QueryContext class", () => {
 		assert.deepStrictEqual(ctx().turnToolCallIds, []);
 		assert.deepStrictEqual(ctx().turnToolCalls, []);
 		assert.equal(ctx().assistantMessageId, null);
+		assert.equal(ctx().reportedToolResultMismatch, true);
 		assert.strictEqual(ctx().emittedToolCallIds.size, 0);
 		assert.strictEqual(ctx().deliveredToolResultIds.size, 0);
 		assert.strictEqual(ctx().resolvedToolResultIds.size, 0);
