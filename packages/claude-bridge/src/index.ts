@@ -1627,7 +1627,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 	if (!assistantMsg?.content) return;
 	updateTurnOutputModel(assistantMsg.model);
 	const assistantMessageId = typeof assistantMsg.id === "string" ? assistantMsg.id : null;
-	if (c.reportedToolResultMismatch && assistantMessageId === c.assistantMessageId) return;
+	if (c.reportedToolResultMismatch) return;
 	if (c.turnSawStreamEvent || (assistantMessageId !== null && assistantMessageId === c.assistantMessageId)) {
 		// Claude Agent SDK can yield the completed assistant message before (or
 		// instead of) a stream_event message_stop for a tool-use turn. Treat that
@@ -1852,15 +1852,24 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			}
 		}
 		if (unmatchedResultIds.length > 0) {
-			const errorResult: McpResult = {
-				content: [{ type: "text", text: `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}` }],
-				isError: true,
-			};
+			const errorMessage = `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}`;
+			const errorResult: McpResult = { content: [{ type: "text", text: errorMessage }], isError: true };
 			for (const pending of queryCtx.pendingToolCalls.values()) pending.resolve(errorResult);
 			queryCtx.pendingToolCalls.clear();
 			reportToolResultMismatch(queryCtx, "unmatched tool result", cwd);
+			queryCtx.deferredUserMessages = [];
+			queryCtx.handledTerminalError = true;
+			queryCtx.turnOutput!.stopReason = "error";
+			queryCtx.turnOutput!.errorMessage = errorMessage;
+			queryCtx.currentPiStream?.push({ type: "error", reason: "error", error: queryCtx.turnOutput! });
+			queryCtx.currentPiStream?.end();
+			queryCtx.currentPiStream = null;
+			const activeQuery = queryCtx.activeQuery as Partial<Pick<ReturnType<typeof query>, "interrupt" | "close">>;
+			if (typeof activeQuery.interrupt === "function") void activeQuery.interrupt().catch(() => {});
+			if (typeof activeQuery.close === "function") try { activeQuery.close(); } catch {}
+			return stream;
 		}
-		const flushedLateToolCalls = unmatchedResultIds.length === 0 && flushUnemittedToolCalls();
+		const flushedLateToolCalls = flushUnemittedToolCalls();
 		if (flushedLateToolCalls) debug(`provider: emitted late tool calls on result-delivery stream`);
 		else if (queryCtx.pendingToolCalls.size > 0) {
 			debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
@@ -1919,6 +1928,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	ctx().deferredUserMessages = [];
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
+	ctx().reportedToolResultMismatch = false;
 	ctx().latestCursor = 0;
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
@@ -2137,6 +2147,11 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 				return;
 			}
 
+			if (ctx().reportedToolResultMismatch) {
+				debug(`provider: tool-result mismatch terminated query; preserving rebuild state`);
+				return;
+			}
+
 			// --- Capture session ID ---
 			const sessionId = capturedSessionId ?? bridgeRuntime().sharedSession?.sessionId;
 			if (sessionId) {
@@ -2193,7 +2208,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			const openedExtraUsage = !suppressDuplicateError && isExtraUsageRequiredMessage(error) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "query error");
 			if ((wasAborted || options?.signal?.aborted) && bridgeRuntime().sharedSession) {
 				bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, forceRotate: true };
-			} else {
+			} else if (!ctx().reportedToolResultMismatch) {
 				bridgeRuntime().sharedSession = null;
 			}
 			ctx().deferredUserMessages = [];
