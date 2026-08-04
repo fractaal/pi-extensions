@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { processAssistantMessage, processStreamEvent } from "../src/index.ts";
+import { processAssistantMessage, processStreamEvent, streamClaudeAgentSdk } from "../src/index.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 
 const model = {
@@ -88,48 +88,67 @@ describe("assistant tool-use boundary fallback", () => {
 		assert.deepEqual(events.map((event) => event.type), ["start", "toolcall_start", "toolcall_end", "done", "stream_end"]);
 	});
 
-	it("records assistant tool-use ids even after the stream already ended", () => {
+	it("delivers a late same-message tool call exactly once when its first result opens the next stream", async () => {
 		const c = ctx();
 		c.resetTurnState(model);
-		c.turnSawStreamEvent = true;
-		c.turnSawToolCall = true;
-		c.currentPiStream = null;
-		c.recordToolCall("toolu_streamed", "bash", { command: "echo first", timeout: 120 });
-		c.turnBlocks.push({
-			type: "toolCall",
-			id: "toolu_streamed",
-			name: "bash",
-			arguments: { command: "echo first", timeout: 120 },
-		});
+		installFakeStream();
+		const names = new Map([["mcp__custom-tools__read", "read"]]);
 
-		processAssistantMessage({
-			type: "assistant",
-			message: {
-				content: [
-					{
-						type: "tool_use",
-						id: "toolu_streamed",
-						name: "mcp__custom-tools__bash",
-						input: { command: "echo first" },
-					},
-					{
-						type: "tool_use",
-						id: "toolu_missing_after_stop",
-						name: "mcp__custom-tools__write",
-						input: { file_path: "out.txt", content: "ok" },
-					},
-				],
-			},
-		}, model, new Map([
-			["mcp__custom-tools__bash", "bash"],
-			["mcp__custom-tools__write", "write"],
-		]));
+		processStreamEvent({ type: "stream_event", event: { type: "message_start", message: { id: "msg-1" } } }, names, model);
+		processStreamEvent({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: {} } } }, names, model);
+		processStreamEvent({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"a.txt\"}" } } }, names, model);
+		processStreamEvent({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }, names, model);
+		processStreamEvent({ type: "stream_event", event: { type: "message_stop" } }, names, model);
 
-		assert.equal(c.currentPiStream, null);
-		assert.deepEqual(c.turnToolCallIds, ["toolu_streamed", "toolu_missing_after_stop"]);
-		assert.equal(c.turnBlocks.length, 2);
-		assert.equal(c.turnBlocks[1].name, "write");
-		assert.equal(c.turnBlocks[1].arguments.path, "out.txt");
+		let resolved;
+		c.activeQuery = {};
+		c.pendingToolCalls.set("call-a", { toolName: "read", resolve(result) { resolved = result; } });
+		const deliveryStream = streamClaudeAgentSdk(model, { messages: [
+			{ role: "assistant", content: [{ type: "toolCall", id: "call-a", name: "read", arguments: { path: "a.txt" } }] },
+			{ role: "toolResult", toolCallId: "call-a", content: [{ type: "text", text: "A result" }] },
+		] });
+
+		processAssistantMessage({ type: "assistant", message: { id: "msg-1", content: [
+			{ type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: { file_path: "a.txt" } },
+		] } }, model, names);
+		assert.strictEqual(c.currentPiStream, deliveryStream, "already-emitted fragments must leave the result stream open");
+
+		processAssistantMessage({ type: "assistant", message: { id: "msg-1", content: [
+			{ type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: { file_path: "a.txt" } },
+			{ type: "tool_use", id: "call-b", name: "mcp__custom-tools__read", input: { file_path: "b.txt" } },
+		] } }, model, names);
+
+		const events = [];
+		for await (const event of deliveryStream) events.push(event);
+		assert.deepEqual(events.filter((event) => event.type === "toolcall_end").map((event) => event.toolCall.id), ["call-b"]);
+		assert.deepEqual(resolved.content, [{ type: "text", text: "A result" }]);
+		assert.equal(c.claimToolCall("read", { path: "b.txt" }).toolCallId, "call-b");
+		assert.deepEqual(c.unemittedToolCalls(), []);
+	});
+
+	it("does not emit unseen calls after an unmatched result stops delivery", () => {
+		const c = ctx();
+		c.resetTurnState(model);
+		c.activeQuery = {};
+		c.assistantMessageId = "msg-1";
+		c.recordToolCall("call-b", "write", { path: "out.txt", content: "ok" });
+		let stoppedResult;
+		c.pendingToolCalls.set("call-b", { toolName: "write", resolve(result) { stoppedResult = result; } });
+
+		const stoppedStream = streamClaudeAgentSdk(model, { messages: [
+			{ role: "assistant", content: [{ type: "toolCall", id: "other", name: "read", arguments: {} }] },
+			{ role: "toolResult", toolCallId: "unknown", content: "unexpected" },
+		] });
+		const names = new Map([["mcp__custom-tools__write", "write"]]);
+		processAssistantMessage({ type: "assistant", message: { id: "msg-1", content: [
+			{ type: "tool_use", id: "call-b", name: "mcp__custom-tools__write", input: { file_path: "out.txt", content: "ok" } },
+		] } }, model, names);
+		processStreamEvent({ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "call-b", name: "mcp__custom-tools__write", input: {} } } }, names, model);
+
+		assert.equal(stoppedResult.isError, true);
+		assert.strictEqual(c.currentPiStream, stoppedStream);
+		assert.equal(c.emittedToolCallIds.has("call-b"), false);
+		assert.deepEqual(c.unemittedToolCalls().map((call) => call.id), ["call-b"]);
 	});
 
 	it("ignores a late bare message_stop so the next assistant fallback still renders text", () => {

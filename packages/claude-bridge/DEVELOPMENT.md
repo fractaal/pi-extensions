@@ -6,6 +6,7 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 
 - The bridge runs Claude Code through the Claude Agent SDK while Pi remains the owner of the visible TUI and tool execution.
 - If the SDK stream yields a completed assistant tool-use message before `message_stop`, the bridge treats that assistant message as the tool-turn boundary. Pi executes the tool calls immediately, and the matching tool results are delivered back before the turn continues.
+- If the SDK reveals another tool call after that boundary, the bridge emits the previously unseen call on the next Pi result-delivery stream instead of leaving its MCP handler waiting forever.
 - Tool results whose IDs were never registered in the active assistant tool-use turn are refused instead of being queued against another pending call. Remaining handlers receive an internal-error result so the turn cannot report false success.
 - If a query tears down while parallel tool results are still queued or unresolved, the bridge writes diagnostics, marks the Claude session for rebuild, and re-imports delivered results from Pi history on the next turn.
 

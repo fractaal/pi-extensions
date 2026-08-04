@@ -91,7 +91,9 @@ export class QueryContext {
 	pendingResults = new Map<string, McpResult>();
 	turnToolCallIds: string[] = [];
 	turnToolCalls: TurnToolCallRecord[] = [];
+	assistantMessageId: string | null = null;
 	claimedToolCallIds = new Set<string>();
+	emittedToolCallIds = new Set<string>();
 	deliveredToolResultIds = new Set<string>();
 	resolvedToolResultIds = new Set<string>();
 	unmatchedToolResultIds = new Set<string>();
@@ -130,7 +132,9 @@ export class QueryContext {
 	resetToolTracking(): void {
 		this.turnToolCallIds = [];
 		this.turnToolCalls = [];
+		this.assistantMessageId = null;
 		this.claimedToolCallIds.clear();
+		this.emittedToolCallIds.clear();
 		this.deliveredToolResultIds.clear();
 		this.resolvedToolResultIds.clear();
 		this.unmatchedToolResultIds.clear();
@@ -158,6 +162,10 @@ export class QueryContext {
 	hasRecordedToolCall(id: string | undefined): boolean {
 		return Boolean(id && (this.turnToolCallIds.includes(id) || this.turnToolCalls.some((call) => call.id === id)));
 	}
+
+	markToolCallEmitted(id: string | undefined): void { if (id) this.emittedToolCallIds.add(id); }
+
+	unemittedToolCalls(): TurnToolCallRecord[] { return this.turnToolCalls.filter((call) => !this.emittedToolCallIds.has(call.id)); }
 
 	claimToolCall(toolName: string, args: Record<string, unknown> = {}): ClaimedToolCall {
 		const unclaimed = this.turnToolCalls.filter((call) => !this.claimedToolCallIds.has(call.id));
