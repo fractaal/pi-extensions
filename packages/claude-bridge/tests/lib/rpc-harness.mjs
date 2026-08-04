@@ -36,7 +36,7 @@ export function createRpcHarness(opts) {
 	// Strip any local node_modules from PATH so we use the globally-installed `pi`.
 	const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_modules")).join(":");
 
-	let pi, rpcLog;
+	let pi, rpcLog, processClosed;
 	let buffer = "";
 	let listeners = [];
 	let reqId = 0;
@@ -52,6 +52,7 @@ export function createRpcHarness(opts) {
 			stdio: ["pipe", "pipe", "pipe"],
 			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, ...env },
 		});
+		processClosed = new Promise((resolve) => pi.once("close", resolve));
 
 		pi.stderr.on("data", (d) => rpcLog.write(d));
 
@@ -72,9 +73,10 @@ export function createRpcHarness(opts) {
 		});
 	}
 
-	function stop() {
+	async function stop() {
 		pi?.kill();
-		return new Promise((r) => rpcLog?.end(r));
+		await processClosed;
+		await new Promise((resolve) => rpcLog?.end(resolve) ?? resolve());
 	}
 
 	function addListener(fn) {

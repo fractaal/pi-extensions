@@ -126,6 +126,43 @@ describe("assistant tool-use boundary fallback", () => {
 		assert.deepEqual(c.unemittedToolCalls(), []);
 	});
 
+	it("interrupts after a tool result and preserves every newly appended steer in FIFO order", async () => {
+		const c = ctx();
+		let interruptCount = 0;
+		let closeCount = 0;
+		let resolvedResult;
+		c.activeQuery = {
+			interrupt() { interruptCount += 1; return Promise.resolve(); },
+			close() { closeCount += 1; },
+		};
+		c.recordToolCall("call-a", "SlowTool", { seconds: 2 });
+		c.latestCursor = 1;
+		c.pendingToolCalls.set("call-a", {
+			toolName: "SlowTool",
+			resolve(result) {
+				c.markToolResultResolved("call-a");
+				resolvedResult = result;
+			},
+		});
+
+		streamClaudeAgentSdk(model, { messages: [
+			{ role: "assistant", content: [{ type: "toolCall", id: "call-a", name: "SlowTool", arguments: { seconds: 2 } }] },
+			{ role: "toolResult", toolCallId: "call-a", content: [{ type: "text", text: "SlowTool completed" }] },
+			{ role: "user", content: [{ type: "text", text: "Stop. Do not call the next tool." }] },
+			{ role: "user", content: [{ type: "text", text: "Also acknowledge this correction." }] },
+		] });
+
+		assert.deepEqual(resolvedResult.content, [{ type: "text", text: "SlowTool completed" }]);
+		assert.deepEqual(c.deferredUserMessages, [
+			"Stop. Do not call the next tool.",
+			"Also acknowledge this correction.",
+		]);
+		assert.equal(interruptCount, 0, "interrupt must wait until the MCP response promise chain can flush");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(interruptCount, 1);
+		assert.equal(closeCount, 0);
+	});
+
 	it("terminates the active query and suppresses new-message calls after an unmatched result", async () => {
 		const c = ctx();
 		c.resetTurnState(model);

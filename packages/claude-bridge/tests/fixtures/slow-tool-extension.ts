@@ -22,4 +22,15 @@ export default function (pi: ExtensionAPI) {
 			return { content: [{ type: "text" as const, text: `SlowTool completed after ${delay}ms` }], details: {} };
 		},
 	});
+
+	const forbiddenParams = Type.Object({});
+	pi.registerTool<typeof forbiddenParams>({
+		name: "ForbiddenTool",
+		label: "A tool steering can cancel before it starts",
+		description: "Returns immediately. Use this only when explicitly asked to call ForbiddenTool after another tool finishes.",
+		parameters: forbiddenParams,
+		async execute() {
+			return { content: [{ type: "text" as const, text: "ForbiddenTool executed" }], details: {} };
+		},
+	});
 }

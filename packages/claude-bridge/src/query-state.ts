@@ -99,6 +99,10 @@ export class QueryContext {
 	unmatchedToolResultIds = new Set<string>();
 	reportedToolResultMismatch = false;
 	deferredUserMessages: string[] = [];
+	steeringInterruptQuery: unknown | null = null;
+	steeringInterruptStatus: "idle" | "pending" | "acknowledged" | "failed" = "idle";
+	steeringInterruptOutcome: Promise<boolean> | null = null;
+	steeringInterruptAttempts = 0;
 	handledTerminalError = false;
 
 	// Per-turn (reset together)

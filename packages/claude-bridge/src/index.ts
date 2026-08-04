@@ -430,6 +430,92 @@ export function reportToolResultMismatch(queryCtx: QueryContext, reason: string,
 	}
 }
 
+const MAX_STEERING_INTERRUPT_ATTEMPTS = 2;
+
+export function requestDeferredSteeringInterrupt(queryCtx: QueryContext): boolean {
+	if (queryCtx.deferredUserMessages.length === 0 || queryCtx.reportedToolResultMismatch) return false;
+	const activeQuery = queryCtx.activeQuery as Partial<Pick<ReturnType<typeof query>, "interrupt">> | null;
+	if (!activeQuery || typeof activeQuery.interrupt !== "function") return false;
+	if (queryCtx.steeringInterruptQuery !== activeQuery) {
+		queryCtx.steeringInterruptQuery = activeQuery;
+		queryCtx.steeringInterruptStatus = "idle";
+		queryCtx.steeringInterruptOutcome = null;
+		queryCtx.steeringInterruptAttempts = 0;
+	}
+	if (queryCtx.steeringInterruptStatus !== "idle") return false;
+	const interrupt = activeQuery.interrupt.bind(activeQuery);
+
+	const progress = queryCtx.toolResultProgress();
+	const safeToolBoundary = progress.expectedCount > 0
+		&& progress.missingDeliveredIds.length === 0
+		&& progress.unresolvedIds.length === 0
+		&& progress.waitingCount === 0
+		&& progress.queuedCount === 0
+		&& progress.unmatchedResultCount === 0;
+	if (!safeToolBoundary) return false;
+
+	queryCtx.steeringInterruptStatus = "pending";
+	queryCtx.steeringInterruptOutcome = new Promise<boolean>((resolve) => {
+		// MCP handlers resolve through several promise layers before the SDK writes
+		// the tool response to Claude Code. Start control on the next event-loop turn
+		// so every resolved MCP response is written first.
+		setImmediate(() => {
+			void (async () => {
+				while (queryCtx.activeQuery === activeQuery && queryCtx.steeringInterruptAttempts < MAX_STEERING_INTERRUPT_ATTEMPTS) {
+					queryCtx.steeringInterruptAttempts += 1;
+					debug(`provider: requesting active-query interrupt attempt ${queryCtx.steeringInterruptAttempts}/${MAX_STEERING_INTERRUPT_ATTEMPTS} at safe tool boundary for ${queryCtx.deferredUserMessages.length} deferred user message(s)`);
+					try {
+						await interrupt();
+						if (queryCtx.activeQuery !== activeQuery) break;
+						queryCtx.steeringInterruptStatus = "acknowledged";
+						resolve(true);
+						return;
+					} catch (error) {
+						debug("provider: deferred steering interrupt failed; correction remains queued:", error);
+						if (queryCtx.activeQuery === activeQuery && queryCtx.steeringInterruptAttempts < MAX_STEERING_INTERRUPT_ATTEMPTS) {
+							await new Promise<void>((nextAttempt) => setImmediate(nextAttempt));
+						}
+					}
+				}
+
+				queryCtx.steeringInterruptStatus = "failed";
+				if (queryCtx.activeQuery === activeQuery && queryCtx.steeringInterruptAttempts >= MAX_STEERING_INTERRUPT_ATTEMPTS) {
+					safeNotify(
+						`Claude bridge could not stop the current Claude turn after ${MAX_STEERING_INTERRUPT_ATTEMPTS} attempts. ` +
+						"Your correction is still queued, but Claude may continue the prior plan until the turn ends.",
+						"warning",
+					);
+				}
+				resolve(false);
+			})();
+		});
+	});
+	return true;
+}
+
+export async function wasDeferredSteeringInterruptAcknowledged(queryCtx: QueryContext, activeQuery: unknown): Promise<boolean> {
+	if (queryCtx.steeringInterruptQuery !== activeQuery) return false;
+	if (queryCtx.steeringInterruptStatus === "acknowledged") return true;
+	if (queryCtx.steeringInterruptStatus !== "pending" || !queryCtx.steeringInterruptOutcome) return false;
+	return queryCtx.steeringInterruptOutcome;
+}
+
+export async function replayDeferredUserMessages(
+	queryCtx: QueryContext,
+	replay: (messages: readonly string[]) => Promise<void>,
+): Promise<void> {
+	while (queryCtx.deferredUserMessages.length > 0) {
+		const batch = queryCtx.deferredUserMessages.slice();
+		await replay(batch);
+		queryCtx.deferredUserMessages.splice(0, batch.length);
+	}
+}
+
+function formatDeferredUserMessages(messages: readonly string[]): string {
+	if (messages.length === 1) return messages[0];
+	return messages.map((message, index) => `Steering message ${index + 1}:\n${message}`).join("\n\n");
+}
+
 export function __testSetBridgeIntegrityState(state: { ui?: Pick<ExtensionUIContext, "notify"> | null; sharedSession?: SessionState | null }): void {
 	if ("ui" in state) bridgeRuntime().piUI = state.ui as ExtensionUIContext | undefined;
 	if ("sharedSession" in state) bridgeRuntime().sharedSession = state.sharedSession ?? null;
@@ -997,6 +1083,16 @@ function extractUserPrompt(messages: Context["messages"]): string | null {
 	return messageContentToText(last.content) || "";
 }
 
+function extractNewUserPrompts(messages: Context["messages"], startIndex: number): string[] {
+	const prompts: string[] = [];
+	for (const message of messages.slice(Math.max(0, startIndex))) {
+		if (message.role !== "user") continue;
+		const prompt = typeof message.content === "string" ? message.content : messageContentToText(message.content);
+		if (prompt) prompts.push(prompt);
+	}
+	return prompts;
+}
+
 /** Extract the last user message as ContentBlockParam[] (preserving images).
  *  Returns null if no images — caller should fall back to string prompt. */
 function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
@@ -1297,6 +1393,7 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 				queryCtx.pendingResults.delete(toolCallId);
 				queryCtx.markToolResultResolved(toolCallId);
 				debug(`mcp handler: ${tool.name} [${toolCallId}] → resolved from queue (${queryCtx.pendingResults.size} remaining)`);
+				requestDeferredSteeringInterrupt(queryCtx);
 				return result;
 			}
 			debug(`mcp handler: ${tool.name} [${toolCallId}] → waiting`);
@@ -1712,95 +1809,103 @@ async function consumeQuery(
 	cwd: string,
 	bridgeConfig: Config,
 	wasAborted: () => boolean,
-): Promise<{ capturedSessionId?: string }> {
+	wasSteeringInterruptAcknowledged: () => boolean | Promise<boolean> = () => false,
+): Promise<{ capturedSessionId?: string; steeringInterrupted: boolean }> {
 	let capturedSessionId: string | undefined;
+	let steeringInterrupted = false;
 
-	for await (const message of sdkQuery) {
-		if (wasAborted()) break;
-		const queryCtx = ctx();
-		activeStreamIdleWatchdogs.get(queryCtx)?.noteChunk();
-		if (!queryCtx.turnOutput) continue;
-		if (!queryCtx.currentPiStream && !(message.type === "assistant" && queryCtx.turnSawToolCall)) continue;
+	try {
+		for await (const message of sdkQuery) {
+			if (wasAborted()) break;
+			const queryCtx = ctx();
+			activeStreamIdleWatchdogs.get(queryCtx)?.noteChunk();
+			if (!queryCtx.turnOutput) continue;
+			if (!queryCtx.currentPiStream && !(message.type === "assistant" && queryCtx.turnSawToolCall)) continue;
 
-		switch (message.type) {
-			case "stream_event":
-				processStreamEvent(message, customToolNameToPi, model);
-				break;
-			case "assistant":
-				processAssistantMessage(message, model, customToolNameToPi);
-				break;
-			case "result":
-				if (!ctx().turnSawStreamEvent && message.subtype === "success") {
-					ensureTurnStarted();
-					const text = message.result || "";
-					ctx().turnBlocks.push({ type: "text", text });
-					const idx = ctx().turnBlocks.length - 1;
-					ctx().currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: ctx().turnOutput });
-					ctx().currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: ctx().turnOutput });
-					ctx().currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: ctx().turnOutput });
-				} else if (message.subtype !== "success" && isExtraUsageRequiredMessage(message)) {
-					const errorLines = Array.isArray((message as any).errors) ? uniqueNonEmptyLines((message as any).errors) : [];
-					const errors = errorLines.length > 0 ? errorLines.join("\n") : String(message.subtype ?? "Claude Code rate limit");
-					const openedExtraUsage = launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "result error");
-					ctx().handledTerminalError = true;
-					ctx().turnOutput.stopReason = "error";
-					ctx().turnOutput.errorMessage = `${errors}${openedExtraUsage ? "\n\nOpened Claude Code /extra-usage helper. Complete billing/admin flow in the browser, then retry the prompt." : "\n\nRun /claude-bridge:extra, or enable Allow extra usage helper in settings."}`;
-					ctx().currentPiStream?.push({ type: "error", reason: "error", error: ctx().turnOutput });
-					ctx().currentPiStream?.end();
-					ctx().currentPiStream = null;
-				}
-				break;
-			case "system":
-				if ((message as any).subtype === "init" && (message as any).session_id) {
-					capturedSessionId = (message as any).session_id;
-				} else if ((message as any).subtype === "model_refusal_fallback") {
-					const originalModel = (message as any).original_model;
-					const fallbackModel = (message as any).fallback_model;
-					updateTurnOutputModel(fallbackModel);
-					debug("consumeQuery: model_refusal_fallback", JSON.stringify({ originalModel, fallbackModel }));
-					if (originalModel === FABLE_MODEL_ID && fallbackModel === FABLE_FALLBACK_MODEL_ID) {
-						safeNotify("Claude bridge switched Fable 5 to Opus 4.8 after Claude Code safety fallback.", "info");
+			switch (message.type) {
+				case "stream_event":
+					processStreamEvent(message, customToolNameToPi, model);
+					break;
+				case "assistant":
+					processAssistantMessage(message, model, customToolNameToPi);
+					break;
+				case "result":
+					if (!ctx().turnSawStreamEvent && message.subtype === "success") {
+						ensureTurnStarted();
+						const text = message.result || "";
+						ctx().turnBlocks.push({ type: "text", text });
+						const idx = ctx().turnBlocks.length - 1;
+						ctx().currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: ctx().turnOutput });
+						ctx().currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: ctx().turnOutput });
+						ctx().currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: ctx().turnOutput });
+					} else if (message.subtype !== "success" && isExtraUsageRequiredMessage(message)) {
+						const errorLines = Array.isArray((message as any).errors) ? uniqueNonEmptyLines((message as any).errors) : [];
+						const errors = errorLines.length > 0 ? errorLines.join("\n") : String(message.subtype ?? "Claude Code rate limit");
+						const openedExtraUsage = launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "result error");
+						ctx().handledTerminalError = true;
+						ctx().turnOutput.stopReason = "error";
+						ctx().turnOutput.errorMessage = `${errors}${openedExtraUsage ? "\n\nOpened Claude Code /extra-usage helper. Complete billing/admin flow in the browser, then retry the prompt." : "\n\nRun /claude-bridge:extra, or enable Allow extra usage helper in settings."}`;
+						ctx().currentPiStream?.push({ type: "error", reason: "error", error: ctx().turnOutput });
+						ctx().currentPiStream?.end();
+						ctx().currentPiStream = null;
 					}
+					break;
+				case "system":
+					if ((message as any).subtype === "init" && (message as any).session_id) {
+						capturedSessionId = (message as any).session_id;
+					} else if ((message as any).subtype === "model_refusal_fallback") {
+						const originalModel = (message as any).original_model;
+						const fallbackModel = (message as any).fallback_model;
+						updateTurnOutputModel(fallbackModel);
+						debug("consumeQuery: model_refusal_fallback", JSON.stringify({ originalModel, fallbackModel }));
+						if (originalModel === FABLE_MODEL_ID && fallbackModel === FABLE_FALLBACK_MODEL_ID) {
+							safeNotify("Claude bridge switched Fable 5 to Opus 4.8 after Claude Code safety fallback.", "info");
+						}
+					}
+					break;
+				case "user":
+					break; // SDK echo of user prompt — not needed
+				case "rate_limit_event": {
+					const info = (message as any).rate_limit_info;
+					debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+					if (info?.status === "rejected") {
+						const resetsAt = formatResetTimestamp(info.resetsAt);
+						const resetAtMs = typeof info.resetsAt === "string" ? Date.parse(info.resetsAt) : undefined;
+						const reason = `${info.rateLimitType ?? "unknown"} rate limit`;
+						const launchedExtraUsage = isExtraUsageRequiredMessage(info) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, reason);
+						emitRateLimitEvent({
+							model: model.id,
+							provider: PROVIDER_ID,
+							rateLimitType: info.rateLimitType,
+							reason,
+							resetAt: info.resetsAt,
+							...(Number.isFinite(resetAtMs) ? { resetAtMs } : {}),
+							source: "claude-bridge",
+							status: "rejected",
+						});
+						bridgeRuntime().piUI?.notify(`${RATE_LIMIT_TOKEN} Claude ${reason} hit — resets ${resetsAt}${launchedExtraUsage ? "; opened /extra-usage helper" : ""}`, "warning");
+					} else if (info?.status === "allowed_warning") {
+						const warning = formatAllowedRateLimitWarning(info);
+						if (warning) bridgeRuntime().piUI?.notify(warning, "warning");
+						else debug("consumeQuery: suppressed low/ambiguous allowed_warning rate_limit_event", JSON.stringify(info).slice(0, 300));
+					}
+					break;
 				}
-				break;
-			case "user":
-				break; // SDK echo of user prompt — not needed
-			case "rate_limit_event": {
-				const info = (message as any).rate_limit_info;
-				debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-				if (info?.status === "rejected") {
-					const resetsAt = formatResetTimestamp(info.resetsAt);
-					const resetAtMs = typeof info.resetsAt === "string" ? Date.parse(info.resetsAt) : undefined;
-					const reason = `${info.rateLimitType ?? "unknown"} rate limit`;
-					const launchedExtraUsage = isExtraUsageRequiredMessage(info) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, reason);
-					emitRateLimitEvent({
-						model: model.id,
-						provider: PROVIDER_ID,
-						rateLimitType: info.rateLimitType,
-						reason,
-						resetAt: info.resetsAt,
-						...(Number.isFinite(resetAtMs) ? { resetAtMs } : {}),
-						source: "claude-bridge",
-						status: "rejected",
-					});
-					bridgeRuntime().piUI?.notify(`${RATE_LIMIT_TOKEN} Claude ${reason} hit — resets ${resetsAt}${launchedExtraUsage ? "; opened /extra-usage helper" : ""}`, "warning");
-				} else if (info?.status === "allowed_warning") {
-					const warning = formatAllowedRateLimitWarning(info);
-					if (warning) bridgeRuntime().piUI?.notify(warning, "warning");
-					else debug("consumeQuery: suppressed low/ambiguous allowed_warning rate_limit_event", JSON.stringify(info).slice(0, 300));
-				}
-				break;
+				default:
+					debug("consumeQuery: unhandled SDK message type", message.type);
+					break;
 			}
-			default:
-				debug("consumeQuery: unhandled SDK message type", message.type);
-				break;
 		}
+	} catch (error) {
+		if (!await wasSteeringInterruptAcknowledged()) throw error;
+		steeringInterrupted = true;
+		debug("consumeQuery: active query ended by acknowledged deferred steering interrupt:", error);
 	}
 
 	// DEBUG: trace when consumeQuery exits
-	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
+	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, steeringInterrupted=${steeringInterrupted}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 
-	return { capturedSessionId };
+	return { capturedSessionId, steeringInterrupted };
 }
 
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
@@ -1882,15 +1987,14 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		//     queue at the turn boundary and appends it to context alongside the
 		//     tool result, then calls the provider again.
 		//   - A followUp is delivered between tool-result turns.
-		// The bridge can't forward these mid-query (the SDK query is in progress),
-		// so we save them for replay as continuation queries after consumeQuery ends.
-		if (lastMsgRole === "user") {
-			const userPrompt = extractUserPrompt(context.messages);
-			if (userPrompt) {
-				ctx().deferredUserMessages.push(userPrompt);
-				debug(`provider: deferred user message for replay after query: ${userPrompt.slice(0, 60)}`);
-			}
+		// Save these for same-session replay. Once every in-flight tool result is
+		// delivered to Claude, interrupt the SDK query so it cannot start another
+		// stale-plan tool before replaying the correction.
+		for (const userPrompt of extractNewUserPrompts(context.messages, queryCtx.latestCursor)) {
+			queryCtx.deferredUserMessages.push(userPrompt);
+			debug(`provider: deferred user message for replay after query: ${userPrompt.slice(0, 60)}`);
 		}
+		requestDeferredSteeringInterrupt(queryCtx);
 
 		if (bridgeRuntime().sharedSession) bridgeRuntime().sharedSession.cursor = context.messages.length;
 		queryCtx.latestCursor = Math.max(queryCtx.latestCursor, context.messages.length);
@@ -1926,10 +2030,14 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	ctx().pendingToolCalls.clear();
 	ctx().pendingResults.clear();
 	ctx().deferredUserMessages = [];
+	ctx().steeringInterruptQuery = null;
+	ctx().steeringInterruptStatus = "idle";
+	ctx().steeringInterruptOutcome = null;
+	ctx().steeringInterruptAttempts = 0;
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	ctx().reportedToolResultMismatch = false;
-	ctx().latestCursor = 0;
+	ctx().latestCursor = context.messages.length;
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
 	const promptBlocks = extractUserPromptBlocks(context.messages);
@@ -2123,7 +2231,15 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	}
 
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, customToolNameToPi, model, cwd, bridgeConfig, () => wasAborted)
+	consumeQuery(
+		sdkQuery,
+		customToolNameToPi,
+		model,
+		cwd,
+		bridgeConfig,
+		() => wasAborted,
+		() => wasDeferredSteeringInterruptAcknowledged(abortCtx, sdkQuery),
+	)
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${ctx().turnOutput?.stopReason}, error=${ctx().turnOutput?.errorMessage}, aborted=${wasAborted}`);
 			if (streamIdleTimedOut) {
@@ -2164,36 +2280,43 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			// Only for outermost queries — reentrant (subagent) queries leave
 			// deferred messages for the parent to handle after it finishes.
 			try {
-				while (ctx().deferredUserMessages.length > 0 && !isReentrant && !wasAborted) {
-					const steerPrompt = ctx().deferredUserMessages.shift()!;
-					debug(`provider: replaying deferred user message: ${steerPrompt.slice(0, 60)}`);
-					ctx().resetTurnState(model);
-					ctx().resetToolTracking();
+				if (!isReentrant && !wasAborted) {
+					await replayDeferredUserMessages(ctx(), async (steerMessages) => {
+						const steerPrompt = formatDeferredUserMessages(steerMessages);
+						debug(`provider: replaying ${steerMessages.length} deferred user message(s): ${steerPrompt.slice(0, 60)}`);
+						ctx().resetTurnState(model);
+						ctx().resetToolTracking();
 
-					const resumeId = bridgeRuntime().sharedSession?.sessionId;
-					if (!resumeId) {
-						debug(`WARNING: no session to resume for deferred message, dropping`);
-						break;
-					}
+						const resumeId = bridgeRuntime().sharedSession?.sessionId;
+						if (!resumeId) throw new Error("No Claude session is available to replay the deferred user message");
 
-					const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
-					const contQuery = query({ prompt: steerPrompt, options: contOptions });
-					ctx().activeQuery = contQuery;
+						const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
+						const contQuery = query({ prompt: steerPrompt, options: contOptions });
+						ctx().activeQuery = contQuery;
 
-					debug(`provider: continuation query, model=${model.id}, resume=${resumeId.slice(0, 8)}, prompt=${steerPrompt.slice(0, 60)}`);
+						debug(`provider: continuation query, model=${model.id}, resume=${resumeId.slice(0, 8)}, prompt=${steerPrompt.slice(0, 60)}`);
 
-					try {
-						const { capturedSessionId: contSid } = await consumeQuery(contQuery, customToolNameToPi, model, cwd, bridgeConfig, () => wasAborted);
-						const sid = contSid ?? bridgeRuntime().sharedSession?.sessionId;
-						if (sid) {
-							bridgeRuntime().sharedSession = { sessionId: sid, cursor: bridgeRuntime().sharedSession?.cursor ?? 0, cwd };
+						try {
+							const { capturedSessionId: contSid } = await consumeQuery(
+								contQuery,
+								customToolNameToPi,
+								model,
+								cwd,
+								bridgeConfig,
+								() => wasAborted,
+								() => wasDeferredSteeringInterruptAcknowledged(ctx(), contQuery),
+							);
+							if (ctx().handledTerminalError || ctx().turnOutput?.stopReason === "error") {
+								throw new Error(ctx().turnOutput?.errorMessage ?? "Deferred user message replay failed");
+							}
+							const sid = contSid ?? bridgeRuntime().sharedSession?.sessionId;
+							if (sid) {
+								bridgeRuntime().sharedSession = { sessionId: sid, cursor: bridgeRuntime().sharedSession?.cursor ?? 0, cwd };
+							}
+						} finally {
+							contQuery.close();
 						}
-					} catch (contError) {
-						debug(`provider: continuation query error:`, contError);
-						break;
-					} finally {
-						contQuery.close();
-					}
+					});
 				}
 			} finally {
 				// Guarantees restoration even if contQuery() throws synchronously
@@ -2206,12 +2329,15 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
 			const suppressDuplicateError = ctx().handledTerminalError || streamIdleTimedOut;
 			const openedExtraUsage = !suppressDuplicateError && isExtraUsageRequiredMessage(error) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "query error");
+			const hasDeferredUserMessages = ctx().deferredUserMessages.length > 0;
 			if ((wasAborted || options?.signal?.aborted) && bridgeRuntime().sharedSession) {
 				bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, forceRotate: true };
+			} else if (hasDeferredUserMessages && bridgeRuntime().sharedSession) {
+				bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true };
 			} else if (!ctx().reportedToolResultMismatch) {
 				bridgeRuntime().sharedSession = null;
 			}
-			ctx().deferredUserMessages = [];
+			if (!hasDeferredUserMessages || wasAborted || options?.signal?.aborted) ctx().deferredUserMessages = [];
 			if (suppressDuplicateError) {
 				debug("provider: suppressing duplicate query error after terminal error was already emitted");
 				return;

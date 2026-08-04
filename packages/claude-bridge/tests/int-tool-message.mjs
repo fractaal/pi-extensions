@@ -8,10 +8,17 @@ import assert from "node:assert/strict";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 30_000;
+// Keep live bridge acceptance independent of Claude Code's known third-party
+// system-prompt discrimination, which can reject a test before inference.
+const NEUTRAL_SYSTEM_PROMPT = "You are a software test assistant. Follow the user's instructions and use only the tools provided by the test host.";
 
 const harness = createRpcHarness({
 	name: "tool-message",
-	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
+	args: [
+		"--system-prompt", NEUTRAL_SYSTEM_PROMPT,
+		"-e", "./tests/fixtures/slow-tool-extension.ts",
+		"--model", "claude-bridge/claude-haiku-4-5",
+	],
 	defaultTimeout: TEST_TIMEOUT,
 });
 
@@ -77,7 +84,7 @@ describe("tool-message integration", () => {
 		await waitForEvent("tool_execution_start");
 		await send({
 			type: "prompt",
-			message: "This is a steer message during tool execution.",
+			message: "Do not call another tool. In your final response, include the exact text returned by the current SlowTool call.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
@@ -95,7 +102,7 @@ describe("tool-message integration", () => {
 		await waitForEvent("tool_execution_start");
 		await send({
 			type: "prompt",
-			message: "This is a steer during parallel tool execution.",
+			message: "Do not call more tools. After every current parallel SlowTool call finishes, list the exact text returned by all three calls.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
@@ -130,26 +137,79 @@ describe("tool-message integration", () => {
 		assert.match(text.toLowerCase(), /pineapple/);
 	});
 
-	it("steer during tool execution is visible to assistant", { timeout: 20_000 }, async () => {
-		// Bug: when a steer arrives during tool execution, pi drains it at the turn
-		// boundary and injects it into context alongside the tool result. The bridge
-		// sees activeQuery=true, enters tool-result-delivery mode, extracts the tool
-		// result, but silently ignores the trailing user message (the steer). Claude
-		// never sees the steer content.
+	it("steer prevents the next stale-plan tool from starting", { timeout: 30_000 }, async () => {
 		const collector = collectText();
-		await send({
-			type: "prompt",
-			message: "Call SlowTool with seconds=2. After it returns, repeat exactly what it returned.",
+		const startedTools = [];
+		const removeListener = harness.addListener((message) => {
+			if (message.type === "tool_execution_start") startedTools.push(message.toolName);
 		});
-		await waitForEvent("tool_execution_start");
-		await send({
-			type: "prompt",
-			message: "IMPORTANT: Also say the exact word 'MANGO' on its own line in your response.",
-			streamingBehavior: "steer",
+		try {
+			const firstBoundary = waitForMatch(
+				(message) => message.type === "agent_end"
+					|| (message.type === "tool_execution_start" && message.toolName === "SlowTool"),
+				"SlowTool execution start or turn end",
+			);
+			await send({
+				type: "prompt",
+				message: "Call SlowTool with seconds=2. Wait for its result. Then call ForbiddenTool exactly once.",
+			});
+			const boundary = await firstBoundary;
+			if (boundary.type !== "tool_execution_start") {
+				assert.fail(`Turn ended before SlowTool started: ${collector.stop().slice(0, 300)}`);
+			}
+			await send({
+				type: "prompt",
+				message: "STOP. Let the current SlowTool finish, but do not call ForbiddenTool. Acknowledge this correction by saying the exact word 'MANGO'.",
+				streamingBehavior: "steer",
+			});
+			await waitForEvent("agent_end");
+			const text = collector.stop();
+			assert.match(text.toLowerCase(), /mango/, `Steer content not visible to assistant: ${text.slice(0, 300)}`);
+			assert.deepEqual(startedTools, ["SlowTool"], `A stale-plan tool started after steering: ${startedTools.join(", ")}`);
+		} finally {
+			collector.stop();
+			removeListener();
+		}
+	});
+
+	it("batches all-mode steering into one balanced continuation", { timeout: 30_000 }, async () => {
+		const collector = collectText();
+		const startedTools = [];
+		let assistantStarts = 0;
+		let assistantEnds = 0;
+		const removeListener = harness.addListener((message) => {
+			if (message.type === "tool_execution_start") startedTools.push(message.toolName);
+			if (message.type === "message_start" && message.message?.role === "assistant") assistantStarts += 1;
+			if (message.type === "message_end" && message.message?.role === "assistant") assistantEnds += 1;
 		});
-		await waitForEvent("agent_end");
-		const text = collector.stop();
-		assert.match(text.toLowerCase(), /mango/, `Steer content not visible to assistant: ${text.slice(0, 300)}`);
+		try {
+			await send({ type: "set_steering_mode", mode: "all" });
+			await send({
+				type: "prompt",
+				message: "Call SlowTool with seconds=2. Wait for its result. Then say ORIGINAL.",
+			});
+			await waitForEvent("tool_execution_start");
+			await send({
+				type: "prompt",
+				message: "STOP. Do not call another tool. Say the exact word 'FIRST'.",
+				streamingBehavior: "steer",
+			});
+			await send({
+				type: "prompt",
+				message: "Also say the exact word 'SECOND'.",
+				streamingBehavior: "steer",
+			});
+			await waitForEvent("agent_end");
+			const text = collector.stop();
+			assert.match(text.toLowerCase(), /first/, `First steer effect missing: ${text.slice(0, 300)}`);
+			assert.match(text.toLowerCase(), /second/, `Second steer effect missing: ${text.slice(0, 300)}`);
+			assert.deepEqual(startedTools, ["SlowTool"]);
+			assert.equal(assistantStarts, assistantEnds, `Unbalanced assistant lifecycle: ${assistantStarts} starts, ${assistantEnds} ends`);
+		} finally {
+			await send({ type: "set_steering_mode", mode: "one-at-a-time" }).catch(() => {});
+			collector.stop();
+			removeListener();
+		}
 	});
 
 	it("abort during tool execution recovers cleanly", { timeout: TEST_TIMEOUT }, async () => {
