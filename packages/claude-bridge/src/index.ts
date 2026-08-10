@@ -505,15 +505,37 @@ export async function replayDeferredUserMessages(
 	replay: (messages: readonly string[]) => Promise<void>,
 ): Promise<void> {
 	while (queryCtx.deferredUserMessages.length > 0) {
-		const batch = queryCtx.deferredUserMessages.slice();
-		await replay(batch);
-		queryCtx.deferredUserMessages.splice(0, batch.length);
+		const batch = queryCtx.deferredUserMessages.splice(0);
+		try {
+			await replay(batch);
+		} catch (error) {
+			queryCtx.deferredUserMessages.unshift(...batch);
+			throw error;
+		}
 	}
 }
 
 function formatDeferredUserMessages(messages: readonly string[]): string {
 	if (messages.length === 1) return messages[0];
 	return messages.map((message, index) => `Steering message ${index + 1}:\n${message}`).join("\n\n");
+}
+
+export function prepareFreshUserPrompt(
+	queryCtx: QueryContext,
+	currentPrompt: string,
+): { promptText: string; retainedUserMessages: string[] } {
+	const retainedUserMessages = queryCtx.deferredUserMessages.splice(0);
+	if (retainedUserMessages.length === 0) return { promptText: currentPrompt, retainedUserMessages };
+	const retainedPrompt = formatDeferredUserMessages(retainedUserMessages);
+	return {
+		promptText: currentPrompt ? `${retainedPrompt}\n\nNewer user message:\n${currentPrompt}` : retainedPrompt,
+		retainedUserMessages,
+	};
+}
+
+export function assertInitialQuerySucceeded(queryCtx: QueryContext): void {
+	if (!queryCtx.reportedToolResultMismatch && !queryCtx.handledTerminalError && queryCtx.turnOutput?.stopReason !== "error") return;
+	throw new Error(queryCtx.turnOutput?.errorMessage ?? "Claude bridge initial query failed");
 }
 
 export function __testSetBridgeIntegrityState(state: { ui?: Pick<ExtensionUIContext, "notify"> | null; sharedSession?: SessionState | null }): void {
@@ -2024,8 +2046,20 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	if (isReentrant) pushContext();
 	debug(`provider: fresh query setup, isReentrant=${isReentrant}, stackDepth=${stackDepth()}`);
 
+	let promptBlocks = extractUserPromptBlocks(context.messages);
+	const freshPrompt = prepareFreshUserPrompt(ctx(), promptBlocks ? "" : extractUserPrompt(context.messages) ?? "");
+	const retainedDeferredUserMessages = freshPrompt.retainedUserMessages;
+	let promptText = freshPrompt.promptText;
+	if (promptBlocks && retainedDeferredUserMessages.length > 0) {
+		promptBlocks = [
+			{ type: "text", text: `${promptText}\n\nNewer user message:` },
+			...promptBlocks,
+		];
+	}
+
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
-	//    arrays. For a reused top-level context, clear explicitly.
+	//    arrays. For a reused top-level context, clear explicitly. A failed
+	//    steering replay is drained into this prompt above before the reset.
 	ctx().currentPiStream = stream;
 	ctx().pendingToolCalls.clear();
 	ctx().pendingResults.clear();
@@ -2040,8 +2074,6 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	ctx().latestCursor = context.messages.length;
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
-	const promptBlocks = extractUserPromptBlocks(context.messages);
-	let promptText = extractUserPrompt(context.messages) ?? "";
 
 	// Guard: empty prompt means the last context message isn't a user message.
 	// This should never happen with the state stack fix — dump diagnostics if it does.
@@ -2157,6 +2189,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 
 	// 4. Capture context for abort handling (must be AFTER pushContext)
 	const abortCtx = ctx();
+	let initialQueryCompleted = false;
 
 	const requestAbort = () => {
 		// interrupt() asks the CLI to stop gracefully; close() kills it immediately.
@@ -2265,8 +2298,9 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 
 			if (ctx().reportedToolResultMismatch) {
 				debug(`provider: tool-result mismatch terminated query; preserving rebuild state`);
-				return;
 			}
+			assertInitialQuerySucceeded(ctx());
+			initialQueryCompleted = true;
 
 			// --- Capture session ID ---
 			const sessionId = capturedSessionId ?? bridgeRuntime().sharedSession?.sessionId;
@@ -2327,6 +2361,9 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		})
 		.catch((error) => {
 			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
+			if (!initialQueryCompleted && !wasAborted && !options?.signal?.aborted && !streamIdleTimedOut && retainedDeferredUserMessages.length > 0) {
+				ctx().deferredUserMessages.unshift(...retainedDeferredUserMessages);
+			}
 			const suppressDuplicateError = ctx().handledTerminalError || streamIdleTimedOut;
 			const openedExtraUsage = !suppressDuplicateError && isExtraUsageRequiredMessage(error) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "query error");
 			const hasDeferredUserMessages = ctx().deferredUserMessages.length > 0;

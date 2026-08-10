@@ -172,6 +172,41 @@ describe("tool-message integration", () => {
 		}
 	});
 
+	it("replayed correction can call a tool and still produce final prose", { timeout: 40_000 }, async () => {
+		const collector = collectText();
+		const startedTools = [];
+		const removeListener = harness.addListener((message) => {
+			if (message.type === "tool_execution_start") startedTools.push(message.toolName);
+		});
+		try {
+			const firstBoundary = waitForMatch(
+				(message) => message.type === "agent_end"
+					|| (message.type === "tool_execution_start" && message.toolName === "SlowTool"),
+				"SlowTool execution start or turn end",
+			);
+			await send({
+				type: "prompt",
+				message: "Call SlowTool with seconds=2. Wait for its result. Then call ForbiddenTool exactly once.",
+			});
+			const boundary = await firstBoundary;
+			if (boundary.type !== "tool_execution_start") {
+				assert.fail(`Turn ended before SlowTool started: ${collector.stop().slice(0, 300)}`);
+			}
+			await send({
+				type: "prompt",
+				message: "STOP. Let the current SlowTool finish, but do not call ForbiddenTool. Instead call SlowTool with seconds=1. After it returns, say the exact word 'PAPAYA'.",
+				streamingBehavior: "steer",
+			});
+			await waitForEvent("agent_end");
+			const text = collector.stop();
+			assert.match(text.toLowerCase(), /papaya/, `Final prose after the steered tool call is missing: ${text.slice(0, 300)}`);
+			assert.deepEqual(startedTools, ["SlowTool", "SlowTool"], `Unexpected tool sequence after steering: ${startedTools.join(", ")}`);
+		} finally {
+			collector.stop();
+			removeListener();
+		}
+	});
+
 	it("batches all-mode steering into one balanced continuation", { timeout: 30_000 }, async () => {
 		const collector = collectText();
 		const startedTools = [];

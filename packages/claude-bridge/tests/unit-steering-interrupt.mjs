@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
 	__testSetBridgeIntegrityState,
+	assertInitialQuerySucceeded,
+	prepareFreshUserPrompt,
 	replayDeferredUserMessages,
 	requestDeferredSteeringInterrupt,
 	wasDeferredSteeringInterruptAcknowledged,
@@ -135,7 +137,33 @@ describe("deferred steering interrupt", () => {
 });
 
 describe("deferred steering replay", () => {
-	it("replays queued messages as one FIFO batch and retains the whole batch after failure", async () => {
+	it("removes the active batch while replaying and preserves later messages for the next batch", async () => {
+		const context = new QueryContext();
+		context.deferredUserMessages.push("first", "second");
+		const attempted = [];
+
+		await replayDeferredUserMessages(context, async (messages) => {
+			attempted.push([...messages]);
+			assert.deepEqual(context.deferredUserMessages, []);
+			if (attempted.length === 1) context.deferredUserMessages.push("third");
+		});
+
+		assert.deepEqual(attempted, [
+			["first", "second"],
+			["third"],
+		]);
+		assert.deepEqual(context.deferredUserMessages, []);
+	});
+
+	it("routes a normally resolved terminal error through failure restoration", () => {
+		const context = new QueryContext();
+		context.handledTerminalError = true;
+		context.turnOutput = { stopReason: "error", errorMessage: "resolved terminal failure" };
+
+		assert.throws(() => assertInitialQuerySucceeded(context), /resolved terminal failure/);
+	});
+
+	it("carries a failed replay batch into the next fresh prompt ahead of newer input", async () => {
 		const context = new QueryContext();
 		context.deferredUserMessages.push("first", "second", "third");
 		const attempted = [];
@@ -143,18 +171,21 @@ describe("deferred steering replay", () => {
 		await assert.rejects(
 			replayDeferredUserMessages(context, async (messages) => {
 				attempted.push([...messages]);
+				assert.deepEqual(context.deferredUserMessages, []);
+				context.deferredUserMessages.push("later");
 				throw new Error("continuation failed");
 			}),
 			/continuation failed/,
 		);
 		assert.deepEqual(attempted, [["first", "second", "third"]]);
-		assert.deepEqual(context.deferredUserMessages, ["first", "second", "third"]);
+		assert.deepEqual(context.deferredUserMessages, ["first", "second", "third", "later"]);
 
-		await replayDeferredUserMessages(context, async (messages) => attempted.push([...messages]));
-		assert.deepEqual(attempted, [
-			["first", "second", "third"],
-			["first", "second", "third"],
-		]);
+		const freshPrompt = prepareFreshUserPrompt(context, "newest");
+		assert.deepEqual(freshPrompt.retainedUserMessages, ["first", "second", "third", "later"]);
 		assert.deepEqual(context.deferredUserMessages, []);
+		assert.ok(freshPrompt.promptText.indexOf("first") < freshPrompt.promptText.indexOf("second"));
+		assert.ok(freshPrompt.promptText.indexOf("second") < freshPrompt.promptText.indexOf("third"));
+		assert.ok(freshPrompt.promptText.indexOf("third") < freshPrompt.promptText.indexOf("later"));
+		assert.ok(freshPrompt.promptText.indexOf("later") < freshPrompt.promptText.indexOf("newest"));
 	});
 });
