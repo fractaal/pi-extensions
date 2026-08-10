@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	type BashTaskManager,
+	type BashTaskManagerOptions,
 	type BashTaskSnapshot,
 	registerBashBackgrounding,
 } from "./bash-backgrounding.ts";
@@ -182,27 +183,42 @@ function createManagementApi(
 	};
 }
 
-export default function agenticProcessesExtension(pi: ExtensionAPI): void {
-	const bash = registerBashBackgrounding(pi);
-	const monitors = registerMonitorExtension(pi);
-	const management = createManagementApi(bash, monitors);
-	const unsubscribeRequest = pi.events?.on?.(AGENTIC_PROCESS_MANAGEMENT_API_REQUEST, (data) => {
-		const request = data as Partial<ManagementApiRequest>;
-		request.accept?.(management.api);
-	}) ?? (() => undefined);
-
-	pi.on("session_shutdown", () => {
-		unsubscribeRequest();
-		management.dispose();
-	});
+export interface AgenticProcessesExtensionOptions {
+	bash?: BashTaskManagerOptions;
 }
+
+export function createAgenticProcessesExtension(options: AgenticProcessesExtensionOptions = {}) {
+	return function agenticProcessesExtension(pi: ExtensionAPI): void {
+		const bash = registerBashBackgrounding(pi, options.bash);
+		const monitors = registerMonitorExtension(pi);
+		const management = createManagementApi(bash, monitors);
+		const unsubscribeRequest = pi.events?.on?.(AGENTIC_PROCESS_MANAGEMENT_API_REQUEST, (data) => {
+			const request = data as Partial<ManagementApiRequest>;
+			request.accept?.(management.api);
+		}) ?? (() => undefined);
+
+		pi.on("session_shutdown", () => {
+			unsubscribeRequest();
+			management.dispose();
+		});
+	};
+}
+
+export default createAgenticProcessesExtension();
 
 export type {
 	BashTaskManager,
+	BashTaskManagerOptions,
 	BashTaskSnapshot,
+	BashTaskSpawnContext,
+	BashTaskSpawnHook,
 	BashTaskStatus,
 	BashTaskUpdateListener,
 } from "./bash-backgrounding.ts";
-export { createBashTaskManager, default as bashBackgroundingExtension } from "./bash-backgrounding.ts";
+export {
+	createBashBackgroundingExtension,
+	createBashTaskManager,
+	default as bashBackgroundingExtension,
+} from "./bash-backgrounding.ts";
 export type { MonitorManager, MonitorSnapshot, MonitorUpdateListener } from "./monitor.ts";
 export { createMonitorManager, default as monitorExtension } from "./monitor.ts";

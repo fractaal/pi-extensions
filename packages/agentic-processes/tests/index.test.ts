@@ -10,6 +10,7 @@ import { createExtensionApiMock, type ExtensionApiMock } from "../../../tests/mo
 import { createBashTaskManager } from "../src/bash-backgrounding.ts";
 import agenticProcessesExtension, {
 	bashBackgroundingExtension,
+	createAgenticProcessesExtension,
 	monitorExtension,
 	requestAgenticProcessManagementApi,
 } from "../src/index.ts";
@@ -444,6 +445,82 @@ describe("agentic processes extension", () => {
 		await expect(
 			manager.start({ command: ":", cwd: tempRoot, backgroundAfterSeconds: 0.01 }),
 		).rejects.toThrow("manager is shutting down");
+	});
+
+	it("applies a fresh per-task spawn hook without mutating process.env", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		let actor = "actor-one";
+		const contexts: Array<{ command: string; cwd: string; env: NodeJS.ProcessEnv }> = [];
+		const manager = createBashTaskManager(apiMock.api, {
+			spawnHook(context) {
+				contexts.push(context);
+				return {
+					...context,
+					env: { ...context.env, ARIA_TEST_ACTOR: actor },
+				};
+			},
+		});
+
+		const first = await manager.start({
+			command: "printf '%s\\n' \"$ARIA_TEST_ACTOR\"",
+			cwd,
+			backgroundAfterSeconds: 0.01,
+		});
+		await first.completion;
+		actor = "actor-two";
+		const second = await manager.start({
+			command: "printf '%s\\n' \"$ARIA_TEST_ACTOR\"",
+			cwd,
+			backgroundAfterSeconds: 0.01,
+		});
+		await second.completion;
+
+		expect((await manager.readOutput({ taskId: first.taskId })).output).toContain("actor-one");
+		expect((await manager.readOutput({ taskId: second.taskId })).output).toContain("actor-two");
+		expect(contexts).toHaveLength(2);
+		expect(contexts[0]).toMatchObject({ command: first.command, cwd });
+		expect(contexts[0]?.env).not.toBe(process.env);
+		expect(process.env.ARIA_TEST_ACTOR).toBeUndefined();
+		await manager.shutdown();
+	});
+
+	it("configures the package extension factory with the same spawn hook", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		createAgenticProcessesExtension({
+			bash: {
+				spawnHook: (context) => ({
+					...context,
+					env: { ...context.env, ARIA_TEST_FACTORY: "factory-ready" },
+				}),
+			},
+		})(apiMock.api);
+		const execute = apiMock.getTool("bash").execute;
+		if (!execute) throw new Error("bash execute missing");
+
+		const result = await execute(
+			"call-factory",
+			{ command: "printf '%s\\n' \"$ARIA_TEST_FACTORY\"", run_in_background: true },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const taskId = taskIdFrom(result);
+		const output = apiMock.getTool("bash_output").execute;
+		if (!output) throw new Error("bash_output execute missing");
+		const completed = await output(
+			"call-output",
+			{ task_id: taskId, block: true, wait_seconds: 2 },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		expect(text(completed)).toContain("factory-ready");
+		await Promise.all(apiMock.getHandlers("session_shutdown").map(async (handler) => {
+			await handler({}, ctx(cwd));
+		}));
 	});
 
 	it("exposes a UI-independent bash task manager API", async () => {
