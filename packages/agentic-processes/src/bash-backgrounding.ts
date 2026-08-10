@@ -86,6 +86,18 @@ export interface BashTaskSnapshot {
 
 export type BashTaskUpdateListener = (snapshot: BashTaskSnapshot) => void | Promise<void>;
 
+export interface BashTaskSpawnContext {
+	command: string;
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+}
+
+export type BashTaskSpawnHook = (context: BashTaskSpawnContext) => BashTaskSpawnContext;
+
+export interface BashTaskManagerOptions {
+	spawnHook?: BashTaskSpawnHook;
+}
+
 interface TaskCompletion {
 	taskId: string;
 	command: string;
@@ -326,10 +338,16 @@ async function spawnTask(
 	backgroundAfterSeconds: number,
 	killAfterSeconds: number | undefined,
 	description: string | undefined,
+	spawnHook: BashTaskSpawnHook | undefined,
 ): Promise<TaskRecord> {
 	const taskId = `bash-${randomUUID()}`;
 	const shell = resolveBashShell();
-	const wrappedCommand = `__pi_backgrounding_run() {\n${command}\n}\n__pi_backgrounding_run\n__pi_backgrounding_status=$?\nwait\nexit $__pi_backgrounding_status`;
+	const spawnContext = spawnHook?.({ command, cwd, env: { ...process.env } }) ?? {
+		command,
+		cwd,
+		env: { ...process.env },
+	};
+	const wrappedCommand = `__pi_backgrounding_run() {\n${spawnContext.command}\n}\n__pi_backgrounding_run\n__pi_backgrounding_status=$?\nwait\nexit $__pi_backgrounding_status`;
 	const outputDir = await mkdtemp(path.join(tmpdir(), `pi-agentic-processes-bash-${taskId}-`));
 	store.outputDirs.set(taskId, outputDir);
 	if (store.closing) {
@@ -340,9 +358,9 @@ async function spawnTask(
 	let child: ChildProcess;
 	try {
 		child = spawn(shell.command, [...shell.args, wrappedCommand], {
-			cwd,
+			cwd: spawnContext.cwd,
 			detached: true,
-			env: process.env,
+			env: spawnContext.env,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -365,9 +383,9 @@ async function spawnTask(
 	const startedAt = Date.now();
 	const task: TaskRecord = {
 		taskId,
-		command,
-		description: description?.trim() || command,
-		cwd,
+		command: spawnContext.command,
+		description: description?.trim() || spawnContext.command,
+		cwd: spawnContext.cwd,
 		outputPath,
 		startedAt,
 		updatedAt: startedAt,
@@ -667,7 +685,7 @@ export interface BashTaskManager {
 	shutdown(): Promise<void>;
 }
 
-export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
+export function createBashTaskManager(pi: ExtensionAPI, managerOptions: BashTaskManagerOptions = {}): BashTaskManager {
 	const store = createBashTaskStore();
 	const listTasks = (status?: string) => {
 		let allTasks = [...store.tasks.values()];
@@ -692,6 +710,7 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 				options.backgroundAfterSeconds,
 				options.killAfterSeconds,
 				options.description,
+				managerOptions.spawnHook,
 			);
 			store.pendingStarts.add(pending);
 			void pending.then(
@@ -787,8 +806,8 @@ export function createBashTaskManager(pi: ExtensionAPI): BashTaskManager {
 	};
 }
 
-export function registerBashBackgrounding(pi: ExtensionAPI): BashTaskManager {
-	const manager = createBashTaskManager(pi);
+export function registerBashBackgrounding(pi: ExtensionAPI, options: BashTaskManagerOptions = {}): BashTaskManager {
+	const manager = createBashTaskManager(pi, options);
 	const unsubscribeAriaLocalUpdates = manager.subscribe((snapshot) => publishAriaLocalBackgroundTask(pi, snapshot));
 
 	pi.registerTool({
@@ -933,6 +952,10 @@ export function registerBashBackgrounding(pi: ExtensionAPI): BashTaskManager {
 	return manager;
 }
 
-export default function bashBackgrounding(pi: ExtensionAPI): void {
-	registerBashBackgrounding(pi);
+export function createBashBackgroundingExtension(options: BashTaskManagerOptions = {}) {
+	return function bashBackgrounding(pi: ExtensionAPI): void {
+		registerBashBackgrounding(pi, options);
+	};
 }
+
+export default createBashBackgroundingExtension();

@@ -40,3 +40,24 @@ The API exposes `list()`, `readOutput(id, tailBytes?)`, `stop(id, reason?)`, and
 the existing bounded combined log contract. The API manages the same records as
 the LLM tools and becomes unavailable when the owning Pi session shuts down. It
 does not persist or recover processes across Pi process restarts.
+
+## Per-task Bash spawn context
+
+Embedded runtimes can configure the package without replacing its Bash tool:
+
+```ts
+import { createAgenticProcessesExtension } from "@fractaal/pi-agentic-processes";
+
+const extension = createAgenticProcessesExtension({
+  bash: {
+    spawnHook: (context) => ({
+      ...context,
+      env: { ...context.env, SESSION_ACTOR: currentActor() },
+    }),
+  },
+});
+```
+
+The hook runs immediately before every Bash child spawn, including commands that
+start in the background or auto-background later. It receives a fresh copy of
+`process.env`; the package does not mutate process-global environment state.
