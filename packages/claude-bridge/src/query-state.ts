@@ -248,6 +248,44 @@ export class QueryContext {
 	}
 }
 
+export async function replayDeferredUserMessages(
+	queryCtx: QueryContext,
+	replay: (messages: readonly string[]) => Promise<void>,
+): Promise<void> {
+	while (queryCtx.deferredUserMessages.length > 0) {
+		const batch = queryCtx.deferredUserMessages.splice(0);
+		try {
+			await replay(batch);
+		} catch (error) {
+			queryCtx.deferredUserMessages.unshift(...batch);
+			throw error;
+		}
+	}
+}
+
+export function formatDeferredUserMessages(messages: readonly string[]): string {
+	if (messages.length === 1) return messages[0];
+	return messages.map((message, index) => `Steering message ${index + 1}:\n${message}`).join("\n\n");
+}
+
+export function prepareFreshUserPrompt(
+	queryCtx: QueryContext,
+	currentPrompt: string,
+): { promptText: string; retainedUserMessages: string[] } {
+	const retainedUserMessages = queryCtx.deferredUserMessages.splice(0);
+	if (retainedUserMessages.length === 0) return { promptText: currentPrompt, retainedUserMessages };
+	const retainedPrompt = formatDeferredUserMessages(retainedUserMessages);
+	return {
+		promptText: currentPrompt ? `${retainedPrompt}\n\nNewer user message:\n${currentPrompt}` : retainedPrompt,
+		retainedUserMessages,
+	};
+}
+
+export function assertInitialQuerySucceeded(queryCtx: QueryContext): void {
+	if (!queryCtx.reportedToolResultMismatch && !queryCtx.handledTerminalError && queryCtx.turnOutput?.stopReason !== "error") return;
+	throw new Error(queryCtx.turnOutput?.errorMessage ?? "Claude bridge initial query failed");
+}
+
 export interface QueryRuntimeState {
 	current: QueryContext;
 	stack: QueryContext[];

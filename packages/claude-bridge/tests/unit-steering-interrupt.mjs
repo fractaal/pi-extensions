@@ -2,13 +2,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
 	__testSetBridgeIntegrityState,
-	assertInitialQuerySucceeded,
-	prepareFreshUserPrompt,
-	replayDeferredUserMessages,
 	requestDeferredSteeringInterrupt,
 	wasDeferredSteeringInterruptAcknowledged,
 } from "../src/index.ts";
-import { QueryContext } from "../src/query-state.ts";
+import {
+	QueryContext,
+	assertInitialQuerySucceeded,
+	prepareFreshUserPrompt,
+	replayDeferredUserMessages,
+} from "../src/query-state.ts";
 
 function fakeQuery({ interrupt } = {}) {
 	let interruptCount = 0;

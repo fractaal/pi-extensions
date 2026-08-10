@@ -17,7 +17,7 @@ import { FABLE_FALLBACK_MODEL_ID, FABLE_MODEL_ID, buildModels, fallbackModelForP
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, createQueryRuntimeState, runWithQueryRuntime, ctx, stackDepth, pushContext, popContext, type QueryRuntimeState } from "./query-state.js";
+import { QueryContext, assertInitialQuerySucceeded, createQueryRuntimeState, formatDeferredUserMessages, prepareFreshUserPrompt, replayDeferredUserMessages, runWithQueryRuntime, ctx, stackDepth, pushContext, popContext, type QueryRuntimeState } from "./query-state.js";
 import { findUnpairedToolUses, summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.js";
 import { loadConfig, normalizeEffortLevel, recordProjectTrust, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
@@ -498,44 +498,6 @@ export async function wasDeferredSteeringInterruptAcknowledged(queryCtx: QueryCo
 	if (queryCtx.steeringInterruptStatus === "acknowledged") return true;
 	if (queryCtx.steeringInterruptStatus !== "pending" || !queryCtx.steeringInterruptOutcome) return false;
 	return queryCtx.steeringInterruptOutcome;
-}
-
-export async function replayDeferredUserMessages(
-	queryCtx: QueryContext,
-	replay: (messages: readonly string[]) => Promise<void>,
-): Promise<void> {
-	while (queryCtx.deferredUserMessages.length > 0) {
-		const batch = queryCtx.deferredUserMessages.splice(0);
-		try {
-			await replay(batch);
-		} catch (error) {
-			queryCtx.deferredUserMessages.unshift(...batch);
-			throw error;
-		}
-	}
-}
-
-function formatDeferredUserMessages(messages: readonly string[]): string {
-	if (messages.length === 1) return messages[0];
-	return messages.map((message, index) => `Steering message ${index + 1}:\n${message}`).join("\n\n");
-}
-
-export function prepareFreshUserPrompt(
-	queryCtx: QueryContext,
-	currentPrompt: string,
-): { promptText: string; retainedUserMessages: string[] } {
-	const retainedUserMessages = queryCtx.deferredUserMessages.splice(0);
-	if (retainedUserMessages.length === 0) return { promptText: currentPrompt, retainedUserMessages };
-	const retainedPrompt = formatDeferredUserMessages(retainedUserMessages);
-	return {
-		promptText: currentPrompt ? `${retainedPrompt}\n\nNewer user message:\n${currentPrompt}` : retainedPrompt,
-		retainedUserMessages,
-	};
-}
-
-export function assertInitialQuerySucceeded(queryCtx: QueryContext): void {
-	if (!queryCtx.reportedToolResultMismatch && !queryCtx.handledTerminalError && queryCtx.turnOutput?.stopReason !== "error") return;
-	throw new Error(queryCtx.turnOutput?.errorMessage ?? "Claude bridge initial query failed");
 }
 
 export function __testSetBridgeIntegrityState(state: { ui?: Pick<ExtensionUIContext, "notify"> | null; sharedSession?: SessionState | null }): void {
