@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-claude-bridge",
-  "version": "1.6.5-fractal.0",
+  "version": "1.6.6-fractal.0",
   "description": "Pi provider bridge that runs Claude Code through the Claude Agent SDK.",
   "type": "module",
   "keywords": [
