@@ -1,4 +1,3 @@
-import { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	type ExtensionAPI,
@@ -250,21 +249,32 @@ async function generateFractalSummary(
 		Math.floor(0.9 * settings.reserveTokens),
 		ctx.model.maxTokens > 0 ? ctx.model.maxTokens : Number.POSITIVE_INFINITY,
 	);
-	const response = await completeSimple(
-		ctx.model,
-		{
-			systemPrompt: FRACTAL_COMPACT_SYSTEM_PROMPT,
-			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
-		},
-		{
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			maxTokens,
-			signal,
-			reasoning: ctx.model.reasoning ? activeReasoning(pi) : undefined,
-			sessionId,
-		},
-	);
+	// Summarize through the registered provider, which is the same route a normal
+	// turn takes. pi-ai's completeSimple resolves the model against pi-ai's api
+	// registry instead, so it only reaches providers backed by a real api module.
+	// Extension-registered providers declare a synthetic api and supply their own
+	// streamSimple, which only the composed provider knows how to route — going
+	// direct threw "No API provider registered for api: <api>" for those models.
+	const provider = ctx.modelRegistry.getProvider(ctx.model.provider);
+	if (!provider) throw new Error(`No provider registered for "${ctx.model.provider}"`);
+
+	const response = await provider
+		.streamSimple(
+			ctx.model,
+			{
+				systemPrompt: FRACTAL_COMPACT_SYSTEM_PROMPT,
+				messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+			},
+			{
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				maxTokens,
+				signal,
+				reasoning: ctx.model.reasoning ? activeReasoning(pi) : undefined,
+				sessionId,
+			},
+		)
+		.result();
 
 	if (response.stopReason === "error") throw new Error(response.errorMessage || "Compaction summarization failed");
 	if (response.stopReason === "aborted") throw new Error("Compaction summarization aborted");
