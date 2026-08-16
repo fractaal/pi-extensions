@@ -28,6 +28,67 @@ describe("fractal compact extension", () => {
 		expect(apiMock.getHandlers("session_compact")).toHaveLength(1);
 	});
 
+	it("summarizes through the registered provider so extension-backed models work", async () => {
+		// Extension providers (the Claude bridge) declare a synthetic api and supply
+		// their own streamSimple. Only the composed provider can route that, so going
+		// straight to pi-ai threw "No API provider registered for api: claude-bridge"
+		// and cancelled compaction outright.
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		fractalCompactExtension(apiMock.api);
+
+		const streamSimpleCalls: Array<{ modelId: string }> = [];
+		const requestedProviders: string[] = [];
+		const model = { id: "claude-sonnet-5", provider: "claude-bridge", api: "claude-bridge", maxTokens: 64_000, reasoning: false };
+
+		const ctx = {
+			hasUI: true,
+			ui: { notify: () => undefined, setStatus: () => undefined },
+			cwd: "/tmp/example",
+			model,
+			sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getSessionId: () => "session-1" },
+			modelRegistry: {
+				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "not-used", headers: {} }),
+				getProvider: (provider: string) => {
+					requestedProviders.push(provider);
+					return {
+						streamSimple: (streamModel: { id: string }) => {
+							streamSimpleCalls.push({ modelId: streamModel.id });
+							return {
+								result: async () => ({
+									stopReason: "stop",
+									content: [{ type: "text", text: "compacted summary" }],
+								}),
+							};
+						},
+					};
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		const before = apiMock.getHandlers("session_before_compact")[0];
+		if (!before) throw new Error("compaction hook missing");
+		const result = (await before(
+			{
+				signal: new AbortController().signal,
+				preparation: {
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+					previousSummary: undefined,
+					tokensBefore: 0,
+					settings: { reserveTokens: 1000 },
+					fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+					firstKeptEntryId: "entry-1",
+				},
+			},
+			ctx,
+		)) as { compaction?: { summary: string } };
+
+		expect(requestedProviders).toEqual(["claude-bridge"]);
+		expect(streamSimpleCalls).toEqual([{ modelId: "claude-sonnet-5" }]);
+		expect(result.compaction?.summary).toContain("compacted summary");
+	});
+
 	it("emits ALR-compatible compaction status events", async () => {
 		const apiMock = createExtensionApiMock();
 		const events = installEventBus(apiMock);

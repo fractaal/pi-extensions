@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-fractal-compact",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Ben/Fractal high-fidelity compaction extension for Pi.",
   "keywords": ["pi-package", "pi-extension", "compact", "fractal"],

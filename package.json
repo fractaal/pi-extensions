@@ -10,8 +10,8 @@
     "build": "npm run build --workspaces"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.80.2",
-    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.80.2-fractal",
+    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.83.0-fractal.6",
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.83.0-fractal.6",
     "@sinclair/typebox": "0.34.49",
     "@types/node": "22.19.19",
     "typescript": "5.9.3",
