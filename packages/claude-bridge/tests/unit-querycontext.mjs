@@ -116,6 +116,59 @@ describe("QueryContext class", () => {
 		assert.equal(claim.ambiguous, false);
 	});
 
+	it("claimToolCall claims the sole same-name call when MCP strips an undeclared argument", () => {
+		// The model sent {id, reason}, but monitor_stop's declared schema has no
+		// `reason`, so MCP validation hands the handler {id} alone while the
+		// recorded tool_use block keeps the model's raw arguments. Refusing the
+		// claim strands the real result and returns a bridge internal error.
+		ctx().recordToolCall("toolu_stop", "monitor_stop", { id: "1e256bfc", reason: "reviewer is quota blocked" });
+
+		const claim = ctx().claimToolCall("monitor_stop", { id: "1e256bfc" });
+
+		assert.equal(claim.toolCallId, "toolu_stop");
+		assert.equal(claim.match, "tool-name");
+		assert.equal(claim.ambiguous, false);
+	});
+
+	it("continueTurnState keeps assistant content produced before a bridge-internal continuation", () => {
+		ctx().resetTurnState(fakeModel);
+		ctx().turnStarted = true;
+		ctx().turnSawStreamEvent = true;
+		ctx().turnSawToolCall = true;
+		ctx().turnBlocks.push({ type: "text", text: "the long report the user watched stream in" });
+
+		ctx().continueTurnState();
+
+		assert.deepStrictEqual(
+			ctx().turnBlocks.map((block) => block.text),
+			["the long report the user watched stream in"],
+		);
+		assert.equal(ctx().turnStarted, true, "a second start event makes consumers discard accumulated content");
+		assert.equal(ctx().turnSawStreamEvent, false);
+		assert.equal(ctx().turnSawToolCall, false);
+	});
+
+	it("continueTurnState seals unfinished blocks so continuation deltas cannot capture them", () => {
+		ctx().resetTurnState(fakeModel);
+		// content_block_stop drops index on completed blocks; this one never closed.
+		ctx().turnBlocks.push({ type: "text", text: "unfinished", index: 0 });
+
+		ctx().continueTurnState();
+
+		assert.equal("index" in ctx().turnBlocks[0], false);
+	});
+
+	it("resetTurnState still discards content for an ordinary new pi turn", () => {
+		ctx().resetTurnState(fakeModel);
+		ctx().turnStarted = true;
+		ctx().turnBlocks.push({ type: "text", text: "previous turn" });
+
+		ctx().resetTurnState(fakeModel);
+
+		assert.deepStrictEqual(ctx().turnBlocks, []);
+		assert.equal(ctx().turnStarted, false);
+	});
+
 	it("toolResultProgress reports teardown mismatch counts", () => {
 		ctx().recordToolCall("t0", "read", { path: "a" });
 		ctx().recordToolCall("t1", "grep", { pattern: "x" });
