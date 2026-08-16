@@ -67,10 +67,6 @@ function sameArgs(left: unknown, right: unknown): boolean {
 	return argsKey(left) === argsKey(right);
 }
 
-function hasRecordedArgs(args: Record<string, unknown> | undefined): boolean {
-	return Object.keys(args ?? {}).length > 0;
-}
-
 function unique(values: Iterable<string | undefined>): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
@@ -133,6 +129,28 @@ export class QueryContext {
 		// assistant messages call resetToolTracking() explicitly.
 	}
 
+	// Prepare for a bridge-internal continuation query that appends to the SAME
+	// pi assistant message. Deliberately NOT resetTurnState: pi never learns the
+	// bridge ran a second query, so it never opens a second assistant message.
+	// Replacing turnOutput here would drop every block the first query produced,
+	// and since pi persists the assistant message from the final `done` payload,
+	// that silently deletes assistant text the user already watched stream in.
+	//
+	// turnStarted is left true on purpose — the pi stream is already open, and a
+	// second `start` event makes consumers treat the continuation as a new
+	// message and discard what they had accumulated.
+	continueTurnState(): void {
+		this.turnSawStreamEvent = false;
+		this.turnSawToolCall = false;
+		this.handledTerminalError = false;
+		if (!this.turnOutput) return;
+		// Seal blocks the previous query left open. The continuation's
+		// content_block indices restart at 0, so an unfinished block would
+		// otherwise capture the continuation's deltas. Completed blocks already
+		// dropped their index at content_block_stop; this covers the rest.
+		for (const block of this.turnOutput.content as Array<{ index?: number }>) delete block.index;
+	}
+
 	resetToolTracking(): void {
 		this.turnToolCallIds = [];
 		this.turnToolCalls = [];
@@ -182,11 +200,19 @@ export class QueryContext {
 			chosen = exact[0];
 			match = "tool-args";
 			ambiguous = exact.length > 1;
-		} else if (byName.length === 1 && !hasRecordedArgs(byName[0].arguments)) {
-			// The SDK can invoke the MCP handler after content_block_start but
-			// before input_json_delta/content_block_stop finalizes arguments.
-			// Falling back to the sole same-name, argument-less call preserves that
-			// race without ever claiming a different tool type.
+		} else if (byName.length === 1) {
+			// Exact-args matching exists to disambiguate PARALLEL calls of the same
+			// tool. With a single unclaimed call of this name there is nothing else
+			// the handler could belong to, so claim it even when the arguments
+			// differ. They legitimately differ in two ways:
+			//   1. The SDK can invoke the handler after content_block_start but
+			//      before input_json_delta/content_block_stop finalizes arguments.
+			//   2. MCP validates handler input against the tool's declared Zod
+			//      schema, which STRIPS keys the schema does not declare. The
+			//      recorded tool_use block keeps the model's raw arguments, so any
+			//      undeclared-but-sent key leaves the two sides permanently unequal.
+			// Refusing to claim here strands the real tool result in pendingResults
+			// and hands the model a bridge internal error instead of its output.
 			chosen = byName[0];
 			match = "tool-name";
 		}

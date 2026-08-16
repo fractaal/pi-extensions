@@ -2280,7 +2280,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 					await replayDeferredUserMessages(ctx(), async (steerMessages) => {
 						const steerPrompt = formatDeferredUserMessages(steerMessages);
 						debug(`provider: replaying ${steerMessages.length} deferred user message(s): ${steerPrompt.slice(0, 60)}`);
-						ctx().resetTurnState(model);
+						ctx().continueTurnState();
 						ctx().resetToolTracking();
 
 						const resumeId = bridgeRuntime().sharedSession?.sessionId;

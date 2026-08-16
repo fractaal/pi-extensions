@@ -268,6 +268,24 @@ describe("agentic processes extension", () => {
 		);
 	});
 
+	it("declares every monitor_stop parameter the tool honors", () => {
+		// Tool schemas are built with additionalProperties: false, so a parameter the
+		// implementation reads but the schema omits is rejected before it ever runs.
+		// monitor_stop honors `reason` (recorded as the monitor's stop reason); when it
+		// was undeclared, a model that sent one got a validation error, and the Claude
+		// bridge could not pair the narrowed handler args back to the recorded call.
+		const monitorMock = createExtensionApiMock();
+		monitorExtension(monitorMock.api);
+
+		const parameters = monitorMock.tools.get("monitor_stop")?.parameters as {
+			properties: Record<string, unknown>;
+			additionalProperties: boolean;
+		};
+
+		expect(parameters.additionalProperties).toBe(false);
+		expect(Object.keys(parameters.properties).sort()).toEqual(["id", "reason", "signal"]);
+	});
+
 	it("manages the same Bash and monitor records created through the LLM tools", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();

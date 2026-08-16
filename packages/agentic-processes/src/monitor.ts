@@ -1202,6 +1202,7 @@ export function registerMonitorExtension(pi: ExtensionAPI): MonitorManager {
 			{
 				id: stringSchema("Monitor ID returned by monitor_start."),
 				signal: stringSchema("Signal to send to the process group. Defaults to SIGTERM."),
+				reason: stringSchema("Why the monitor is being stopped. Recorded on the monitor. Defaults to \"stopped by monitor_stop\"."),
 			},
 			["id"],
 		),
