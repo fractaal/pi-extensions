@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-directive-roots",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Directive-root loading and mid-turn discovery for Pi across CLAUDE.md, AGENTS.md, MEMORY.md, and shared skill directories.",
   "type": "module",
   "main": "./dist/index.js",

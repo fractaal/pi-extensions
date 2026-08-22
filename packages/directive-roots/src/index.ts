@@ -29,6 +29,7 @@ export interface DirectiveContextFile {
 
 export interface BuildDirectiveContextBlockOptions {
   alreadyLoadedPaths?: ReadonlySet<string>;
+  alreadyLoadedContent?: string;
 }
 
 export interface DiscoverDirectiveFilesOptions {
@@ -93,15 +94,18 @@ export function skillPathsForRoots(roots: ReadonlyArray<string>): string[] {
 export function buildDirectiveContextBlock(files: ReadonlyArray<DirectiveContextFile>, options: BuildDirectiveContextBlockOptions = {}): string {
   const alreadyLoadedPaths = options.alreadyLoadedPaths ?? new Set<string>();
   const seen = new Set<string>();
+  const seenContent = new Set<string>();
   const groups = new Map<string, DirectiveContextFile[]>();
 
   for (const file of files) {
-    if (!file.path || !file.content.trim()) continue;
-    if (alreadyLoadedPaths.has(file.path)) continue;
+    const content = file.content.trim();
+    if (!file.path || !content) continue;
+    if (alreadyLoadedPaths.has(file.path) || options.alreadyLoadedContent?.includes(content)) continue;
     const group = file.group ?? DEFAULT_STATIC_GROUP;
     const key = `${group}\0${file.scope}\0${file.path}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key) || seenContent.has(content)) continue;
     seen.add(key);
+    seenContent.add(content);
     groups.set(group, [...(groups.get(group) ?? []), file]);
   }
 
@@ -183,7 +187,7 @@ export function createDirectiveRootsExtension(options: DirectiveRootsExtensionOp
       const block = buildDirectiveContextBlock([
         ...staticDirectiveFiles,
         ...localFiles,
-      ], { alreadyLoadedPaths });
+      ], { alreadyLoadedPaths, alreadyLoadedContent: event.systemPrompt });
       if (!block) return undefined;
       if (event.systemPrompt.includes(block)) return undefined;
       return { systemPrompt: `${event.systemPrompt}\n\n${block}` };

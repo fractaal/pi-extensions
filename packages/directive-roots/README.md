@@ -48,7 +48,7 @@ The Node import resolves to `dist/` through the package `exports` map. Do not im
 ## Behavior
 
 - Startup/resource discovery loads directive roots around the current cwd and derives all supported skill directories.
-- `before_agent_start` appends directive file content that Pi has not already loaded through its normal context-file system.
+- `before_agent_start` appends directive file content that Pi has not already loaded through its normal context-file system, deduplicating identical trimmed content across paths and directive groups.
 - Read-like tool results (`read`, `grep`, `find`, `ls`) are allowed, then annotated with a `<system-notice>` when they enter a directory governed by newly discovered directives.
 - Write-like tool calls (`write`, `edit`) are blocked until newly applicable directive files are surfaced to the model.
 - Mid-session discoveries are persisted with `pi.appendEntry()` so reloaded sessions can reconstruct the loaded directive paths.
