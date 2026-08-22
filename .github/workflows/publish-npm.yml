@@ -1,0 +1,77 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - '*-v*'
+
+permissions: {}
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify and publish
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify release source
+        id: release
+        run: node scripts/verify-release-source.mjs "${GITHUB_REF_NAME}"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build package
+        run: npm run build --workspace "${{ steps.release.outputs.package }}"
+
+      - name: Inspect package contents
+        run: npm pack --dry-run --workspace "${{ steps.release.outputs.package }}"
+
+      - name: Revalidate live release refs
+        run: node scripts/verify-release-source.mjs "${GITHUB_REF_NAME}"
+
+      - name: Publish package
+        env:
+          PACKAGE: ${{ steps.release.outputs.package }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          package_spec="${PACKAGE}@${VERSION}"
+          if npm view "${package_spec}" version >/dev/null 2>&1; then
+            published_commit="$(npm view "${package_spec}" gitHead)"
+            if [[ "${published_commit}" != "${RELEASE_COMMIT}" ]]; then
+              echo "::error::${package_spec} already exists from ${published_commit:-an unknown commit}, not ${RELEASE_COMMIT}."
+              exit 1
+            fi
+            echo "${package_spec} is already published from this release commit."
+            exit 0
+          fi
+
+          npm publish --workspace "${PACKAGE}" --access public --provenance

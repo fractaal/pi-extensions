@@ -27,13 +27,14 @@ npm test
 npm run build
 ```
 
-Release (per package):
+Release one package by committing its version bump to `main`, then tagging that commit with its package-directory name:
 
 ```bash
-cd packages/<name>
-npm version minor
-npm publish   # prepack builds dist/
+git tag directive-roots-v0.1.1
+git push origin directive-roots-v0.1.1
 ```
+
+[`.github/workflows/publish-npm.yml`](.github/workflows/publish-npm.yml) verifies that the live tag version matches the selected package and that the tagged commit is on `main`, then tests, builds, and publishes through npm Trusted Publishing. The workflow has no npm token or OTP. Before a package's first automated release, its npm Trusted Publisher must authorize repository `fractaal/pi-extensions`, workflow `publish-npm.yml`, and environment `npm-publish`; that environment must admit only package release tags, and matching tags must be protected from update or deletion.
 
 ## Provenance
 

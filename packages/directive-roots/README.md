@@ -55,19 +55,13 @@ The Node import resolves to `dist/` through the package `exports` map. Do not im
 
 ## Publish flow
 
-From the monorepo root:
+Commit the package version bump to `main`, then push its release tag:
 
 ```bash
-npm run typecheck
-npm test
-npm run build --workspace @fractaal/pi-directive-roots
+git tag directive-roots-v0.1.1
+git push origin directive-roots-v0.1.1
 ```
 
-Then publish from this package directory:
-
-```bash
-cd packages/directive-roots
-npm publish --access public
-```
+The monorepo's `publish-npm.yml` workflow verifies the live tag, package version, and `main` ancestry before testing, building, packing, and publishing through npm Trusted Publishing. The npm package must authorize repository `fractaal/pi-extensions`, workflow `publish-npm.yml`, and environment `npm-publish`; that GitHub environment and matching release tags must be protected before the first release. No local npm login, token, OTP, or `npm publish` command is part of the release path.
 
 `prepack` builds `dist/` for the npm tarball. `dist/` is ignored by git and should not be committed.
