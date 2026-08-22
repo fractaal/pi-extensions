@@ -121,6 +121,19 @@ describe('directive root primitives', () => {
     expect(block).toContain('scope="user" path="CLAUDE.md"');
     expect(block).toContain('user rules');
   });
+
+  it('injects identical directive content only once across files, groups, and the existing prompt', () => {
+    const block = buildDirectiveContextBlock([
+      { scope: 'org', path: 'CLAUDE.md', content: 'shared rules\n', group: 'Firestore org/user directive context' },
+      { scope: 'project', path: '/repo/AGENTS.md', content: '\nshared rules', group: 'Local project directive context' },
+      { scope: 'project', path: '/repo/MEMORY.md', content: 'already in the prompt', group: 'Local project directive context' },
+    ], { alreadyLoadedContent: 'base prompt\nalready in the prompt' });
+
+    expect(block).toContain('scope="org" path="CLAUDE.md"');
+    expect(block).not.toContain('/repo/AGENTS.md');
+    expect(block).not.toContain('/repo/MEMORY.md');
+    expect(block.match(/shared rules/g)).toHaveLength(1);
+  });
 });
 
 describe('Pi extension behavior', () => {

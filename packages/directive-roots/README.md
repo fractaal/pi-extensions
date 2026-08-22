@@ -48,26 +48,20 @@ The Node import resolves to `dist/` through the package `exports` map. Do not im
 ## Behavior
 
 - Startup/resource discovery loads directive roots around the current cwd and derives all supported skill directories.
-- `before_agent_start` appends directive file content that Pi has not already loaded through its normal context-file system.
+- `before_agent_start` appends directive file content that Pi has not already loaded through its normal context-file system, deduplicating identical trimmed content across paths and directive groups.
 - Read-like tool results (`read`, `grep`, `find`, `ls`) are allowed, then annotated with a `<system-notice>` when they enter a directory governed by newly discovered directives.
 - Write-like tool calls (`write`, `edit`) are blocked until newly applicable directive files are surfaced to the model.
 - Mid-session discoveries are persisted with `pi.appendEntry()` so reloaded sessions can reconstruct the loaded directive paths.
 
 ## Publish flow
 
-From the monorepo root:
+Commit the package version bump to `main`, then push its release tag:
 
 ```bash
-npm run typecheck
-npm test
-npm run build --workspace @fractaal/pi-directive-roots
+git tag directive-roots-v0.1.1
+git push origin directive-roots-v0.1.1
 ```
 
-Then publish from this package directory:
-
-```bash
-cd packages/directive-roots
-npm publish --access public
-```
+The monorepo's `publish-npm.yml` workflow verifies the live tag, package version, and `main` ancestry before testing, building, packing, and publishing through npm Trusted Publishing. The npm package must authorize repository `fractaal/pi-extensions`, workflow `publish-npm.yml`, and environment `npm-publish`; that GitHub environment and matching release tags must be protected before the first release. No local npm login, token, OTP, or `npm publish` command is part of the release path.
 
 `prepack` builds `dist/` for the npm tarball. `dist/` is ignored by git and should not be committed.
