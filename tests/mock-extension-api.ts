@@ -2,6 +2,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 type RegisteredTool = {
 	name: string;
+	description?: string;
+	promptSnippet?: string;
+	promptGuidelines?: string[];
 	parameters?: unknown;
 	execute?: (...args: unknown[]) => unknown;
 	renderCall?: (...args: unknown[]) => unknown;

@@ -717,6 +717,35 @@ describe("agentic processes extension", () => {
 		});
 	});
 
+	it("guides background Bash work toward completion instead of polling", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		bashBackgroundingExtension(apiMock.api);
+		const bashTool = apiMock.getTool("bash");
+		const bashOutputTool = apiMock.getTool("bash_output");
+		const bash = bashTool.execute;
+		if (!bash) throw new Error("bash execute missing");
+		const backgroundGuidance =
+			"Yield by default. You will be notified if this task completes or fails, barring an unexpected session restart. Use bash_output only when progress was explicitly requested, you suspect the task is stuck, or the completion notice was missed. Do not busy-wait or poll just for the sake of doing so. If periodic sampling is genuinely required, put it inside one bounded background command or use a naturally sparse monitor.";
+		const guidance =
+			"Use bash for ordinary shell commands. If bash returns a task_id, yield by default. You will be notified if this task completes or fails, barring an unexpected session restart. Use bash_output only when progress was explicitly requested, you suspect the task is stuck, or the completion notice was missed. Do not busy-wait or poll just for the sake of doing so. If periodic sampling is genuinely required, put it inside one bounded background command or use a naturally sparse monitor.";
+		const outputDescription =
+			"Read output and status for a background bash task. Use this only when progress was explicitly requested, you suspect the task is stuck, or a completion notice was missed. Do not use it to wait for ordinary completion or to poll just for the sake of doing so.";
+
+		const result = await bash(
+			"call-bg-guidance",
+			{ command: "sleep 0.05; printf 'done\\n'", run_in_background: true },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+
+		expect(bashTool.promptGuidelines).toContain(guidance);
+		expect(bashOutputTool.description).toBe(outputDescription);
+		expect(text(result)).toContain(backgroundGuidance);
+	});
+
 	it.skipIf(process.platform === "win32")(
 		"suppresses completion steering until a timed-out blocking poll finishes reading its snapshot",
 		async () => {
