@@ -461,7 +461,7 @@ function backgroundText(task: TaskRecord, auto: boolean): string {
 			: "Command started in background.",
 		`task_id: ${task.taskId}`,
 		`output_path: ${task.outputPath}`,
-		"Use bash_output with this task_id to inspect progress, or kill_bash to stop it.",
+		"Yield by default. You will be notified if this task completes or fails, barring an unexpected session restart. Use bash_output only when progress was explicitly requested, you suspect the task is stuck, or the completion notice was missed. Do not busy-wait or poll just for the sake of doing so. If periodic sampling is genuinely required, put it inside one bounded background command or use a naturally sparse monitor.",
 	].join("\n");
 }
 
@@ -817,7 +817,7 @@ export function registerBashBackgrounding(pi: ExtensionAPI, options: BashTaskMan
 			"Execute a bash command. Long-running commands auto-background after at most 1 minute and return a task id. Commands have no default kill deadline; use kill_after_seconds only when you intentionally want a hard deadline. Use bash_output to inspect progress, bash_tasks to discover live tasks, and kill_bash to stop a task.",
 		promptSnippet: "Execute bash commands; long-running commands auto-background after at most 1 minute",
 		promptGuidelines: [
-			"Use bash for ordinary shell commands. If bash returns a task_id, Pi will steer with a completion message at the next safe turn boundary; use bash_output to inspect progress before then or kill_bash to stop it.",
+			"Use bash for ordinary shell commands. If bash returns a task_id, yield by default. You will be notified if this task completes or fails, barring an unexpected session restart. Use bash_output only when progress was explicitly requested, you suspect the task is stuck, or the completion notice was missed. Do not busy-wait or poll just for the sake of doing so. If periodic sampling is genuinely required, put it inside one bounded background command or use a naturally sparse monitor.",
 			"Use background_after_seconds only to control foreground responsiveness; it does not kill the command and cannot exceed 60 seconds.",
 			"Use kill_after_seconds only as an explicit hard kill deadline for commands known to hang. If omitted, no kill deadline is applied. Prefer kill_bash for intentional stops after a task id exists.",
 			"Use bash_tasks to discover live background bash tasks if the original task_id is no longer in context. Bash task tracking is in-memory and scoped to the current Pi process/session.",
@@ -879,7 +879,7 @@ export function registerBashBackgrounding(pi: ExtensionAPI, options: BashTaskMan
 		name: "bash_output",
 		label: "bash_output",
 		description:
-			"Read output and status for a background bash task. Set block=true to wait briefly for completion; wait_seconds controls only this polling wait and does not kill the task.",
+			"Read output and status for a background bash task. Use this only when progress was explicitly requested, you suspect the task is stuck, or a completion notice was missed. Do not use it to wait for ordinary completion or to poll just for the sake of doing so.",
 		promptSnippet: "Read output/status for a background bash task",
 		parameters: bashOutputParams,
 		executionMode: "sequential",
