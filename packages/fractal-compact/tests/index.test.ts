@@ -1,7 +1,20 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { createExtensionApiMock } from "../../../tests/mock-extension-api.ts";
 import fractalCompactExtension from "../src/index.ts";
+
+// Use this package's SDK types, not the root fixture's older Pi dependency.
+// The partial mock implements only the hooks and thinking level this extension consumes.
+function createExtensionApiMock() {
+	type Handler = (event: unknown, context: ExtensionContext) => unknown;
+	const handlers = new Map<string, Handler[]>();
+	const api = {
+		on(name: string, handler: Handler) {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+		},
+		getThinkingLevel: () => "off",
+	} as unknown as ExtensionAPI;
+	return { api, getHandlers: (name: string) => handlers.get(name) ?? [] };
+}
 
 type EventBusMock = {
 	emits: Array<{ name: string; data: unknown }>;
