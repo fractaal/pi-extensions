@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-fractal-compact",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Ben/Fractal high-fidelity compaction extension for Pi.",
   "keywords": ["pi-package", "pi-extension", "compact", "fractal"],
@@ -32,6 +32,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.84.8"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

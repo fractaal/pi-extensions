@@ -1,7 +1,20 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { createExtensionApiMock } from "../../../tests/mock-extension-api.ts";
 import fractalCompactExtension from "../src/index.ts";
+
+// Use this package's SDK types, not the root fixture's older Pi dependency.
+// The partial mock implements only the hooks and thinking level this extension consumes.
+function createExtensionApiMock() {
+	type Handler = (event: unknown, context: ExtensionContext) => unknown;
+	const handlers = new Map<string, Handler[]>();
+	const api = {
+		on(name: string, handler: Handler) {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+		},
+		getThinkingLevel: () => "off",
+	} as unknown as ExtensionAPI;
+	return { api, getHandlers: (name: string) => handlers.get(name) ?? [] };
+}
 
 type EventBusMock = {
 	emits: Array<{ name: string; data: unknown }>;
@@ -87,6 +100,30 @@ describe("fractal compact extension", () => {
 		expect(requestedProviders).toEqual(["claude-bridge"]);
 		expect(streamSimpleCalls).toEqual([{ modelId: "claude-sonnet-5" }]);
 		expect(result.compaction?.summary).toContain("compacted summary");
+	});
+
+	it("uses the checkpoint-aware summary seam without a tail-only provider request", async () => {
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		fractalCompactExtension(apiMock.api);
+		let prompt = '';
+		const before = apiMock.getHandlers('session_before_compact')[0]!;
+		const result = await before({
+			signal: new AbortController().signal,
+			summarizeNativeContext: async (context: { messages: Array<{ content: Array<{ text: string }> }> }) => {
+				prompt = context.messages[0]!.content[0]!.text;
+				return { stopReason: 'stop', content: [{ type: 'text', text: 'Prior checkpoint and tail preserved' }] };
+			},
+			preparation: { messagesToSummarize: [{ role: 'user', content: 'Keep this new constraint', timestamp: 1 }], turnPrefixMessages: [], tokensBefore: 200000, settings: { reserveTokens: 1000 }, fileOps: { read: new Set(), written: new Set(), edited: new Set() }, firstKeptEntryId: 'tail' },
+		}, {
+			cwd: '/tmp/example', model: { id: 'native-model', maxTokens: 64000 },
+			ui: { notify: () => undefined, setStatus: () => undefined },
+			sessionManager: { getSessionFile: () => '/tmp/session', getSessionId: () => 'session' },
+			modelRegistry: { getProvider: () => { throw new Error('Tail-only provider path must not run'); } },
+		} as unknown as ExtensionContext) as { compaction: { summary: string } };
+		expect(result.compaction.summary).toContain('Prior checkpoint and tail preserved');
+		expect(prompt).toContain('Keep this new constraint');
+		expect(prompt).toContain('preserve methodology');
 	});
 
 	it("emits ALR-compatible compaction status events", async () => {

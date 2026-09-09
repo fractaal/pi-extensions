@@ -242,13 +242,22 @@ async function generateFractalSummary(
 		);
 	}
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-	if (!auth.ok) throw new Error(auth.error);
-
 	const maxTokens = Math.min(
 		Math.floor(0.9 * settings.reserveTokens),
 		ctx.model.maxTokens > 0 ? ctx.model.maxTokens : Number.POSITIVE_INFINITY,
 	);
+	if (event.summarizeNativeContext) {
+		const response = await event.summarizeNativeContext({
+			systemPrompt: FRACTAL_COMPACT_SYSTEM_PROMPT,
+			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+		}, { maxTokens });
+		if (response.stopReason !== "stop") throw new Error("Native-to-text summary is incomplete");
+		return textContent(response.content).trim();
+	}
+
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+	if (!auth.ok) throw new Error(auth.error);
+
 	// Summarize through the registered provider, which is the same route a normal
 	// turn takes. pi-ai's completeSimple resolves the model against pi-ai's api
 	// registry instead, so it only reaches providers backed by a real api module.
