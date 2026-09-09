@@ -89,6 +89,30 @@ describe("fractal compact extension", () => {
 		expect(result.compaction?.summary).toContain("compacted summary");
 	});
 
+	it("uses the checkpoint-aware summary seam without a tail-only provider request", async () => {
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		fractalCompactExtension(apiMock.api);
+		let prompt = '';
+		const before = apiMock.getHandlers('session_before_compact')[0]!;
+		const result = await before({
+			signal: new AbortController().signal,
+			summarizeNativeContext: async (context: { messages: Array<{ content: Array<{ text: string }> }> }) => {
+				prompt = context.messages[0]!.content[0]!.text;
+				return { stopReason: 'stop', content: [{ type: 'text', text: 'Prior checkpoint and tail preserved' }] };
+			},
+			preparation: { messagesToSummarize: [{ role: 'user', content: 'Keep this new constraint', timestamp: 1 }], turnPrefixMessages: [], tokensBefore: 200000, settings: { reserveTokens: 1000 }, fileOps: { read: new Set(), written: new Set(), edited: new Set() }, firstKeptEntryId: 'tail' },
+		}, {
+			cwd: '/tmp/example', model: { id: 'native-model', maxTokens: 64000 },
+			ui: { notify: () => undefined, setStatus: () => undefined },
+			sessionManager: { getSessionFile: () => '/tmp/session', getSessionId: () => 'session' },
+			modelRegistry: { getProvider: () => { throw new Error('Tail-only provider path must not run'); } },
+		} as unknown as ExtensionContext) as { compaction: { summary: string } };
+		expect(result.compaction.summary).toContain('Prior checkpoint and tail preserved');
+		expect(prompt).toContain('Keep this new constraint');
+		expect(prompt).toContain('preserve methodology');
+	});
+
 	it("emits ALR-compatible compaction status events", async () => {
 		const apiMock = createExtensionApiMock();
 		const events = installEventBus(apiMock);
