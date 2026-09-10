@@ -90,9 +90,10 @@ export interface BashTaskSpawnContext {
 	command: string;
 	cwd: string;
 	env: NodeJS.ProcessEnv;
+	signal?: AbortSignal;
 }
 
-export type BashTaskSpawnHook = (context: BashTaskSpawnContext) => BashTaskSpawnContext;
+export type BashTaskSpawnHook = (context: BashTaskSpawnContext) => BashTaskSpawnContext | Promise<BashTaskSpawnContext>;
 
 export interface BashTaskManagerOptions {
 	spawnHook?: BashTaskSpawnHook;
@@ -330,6 +331,10 @@ function queueCompletionMessage(pi: ExtensionAPI, completion: TaskCompletion): v
 	}
 }
 
+function assertBashStartNotAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw new Error("Bash task start was aborted.");
+}
+
 async function spawnTask(
 	pi: ExtensionAPI,
 	store: BashTaskStore,
@@ -339,16 +344,22 @@ async function spawnTask(
 	killAfterSeconds: number | undefined,
 	description: string | undefined,
 	spawnHook: BashTaskSpawnHook | undefined,
+	signal: AbortSignal | undefined,
 ): Promise<TaskRecord> {
 	const taskId = `bash-${randomUUID()}`;
+	assertBashStartNotAborted(signal);
 	const shell = resolveBashShell();
-	const spawnContext = spawnHook?.({ command, cwd, env: { ...process.env } }) ?? {
-		command,
-		cwd,
-		env: { ...process.env },
-	};
+	const spawnContext = spawnHook
+		? await spawnHook({ command, cwd, env: { ...process.env }, ...(signal ? { signal } : {}) })
+		: { command, cwd, env: { ...process.env } };
+	assertBashStartNotAborted(signal);
+	if (store.closing) throw new Error("Cannot start a Bash task while the manager is shutting down.");
 	const wrappedCommand = `__pi_backgrounding_run() {\n${spawnContext.command}\n}\n__pi_backgrounding_run\n__pi_backgrounding_status=$?\nwait\nexit $__pi_backgrounding_status`;
 	const outputDir = await mkdtemp(path.join(tmpdir(), `pi-agentic-processes-bash-${taskId}-`));
+	if (signal?.aborted) {
+		await rm(outputDir, { recursive: true, force: true });
+		throw new Error("Bash task start was aborted.");
+	}
 	store.outputDirs.set(taskId, outputDir);
 	if (store.closing) {
 		await removeTaskOutputDir(store, taskId);
@@ -657,6 +668,7 @@ export interface BashTaskStartOptions {
 	backgroundAfterSeconds: number;
 	killAfterSeconds?: number;
 	description?: string;
+	signal?: AbortSignal;
 }
 
 export interface BashTaskReadOptions {
@@ -711,6 +723,7 @@ export function createBashTaskManager(pi: ExtensionAPI, managerOptions: BashTask
 				options.killAfterSeconds,
 				options.description,
 				managerOptions.spawnHook,
+				options.signal,
 			);
 			store.pendingStarts.add(pending);
 			void pending.then(
@@ -841,6 +854,7 @@ export function registerBashBackgrounding(pi: ExtensionAPI, options: BashTaskMan
 				backgroundAfterSeconds,
 				killAfterSeconds,
 				description: params.description,
+				signal,
 			});
 			const abort = () => {
 				void manager.stop(task.taskId, "aborted by user", 0);
