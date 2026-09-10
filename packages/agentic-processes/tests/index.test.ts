@@ -503,6 +503,70 @@ describe("agentic processes extension", () => {
 		await manager.shutdown();
 	});
 
+	it("does not invoke an async spawn hook for an already-aborted start", async () => {
+		const cwd = await tempCwd();
+		vi.stubEnv("TMPDIR", cwd);
+		vi.stubEnv("TMP", cwd);
+		vi.stubEnv("TEMP", cwd);
+		const apiMock = createExtensionApiMock();
+		const spawnHook = vi.fn(async (context: { command: string; cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal }) => context);
+		const manager = createBashTaskManager(apiMock.api, { spawnHook });
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(manager.start({
+			command: "printf 'should-not-run\\n'",
+			cwd,
+			backgroundAfterSeconds: 0.01,
+			signal: controller.signal,
+		})).rejects.toThrow("Bash task start was aborted.");
+		expect(spawnHook).not.toHaveBeenCalled();
+		expect(manager.listSnapshots()).toEqual([]);
+		expect(await readdir(cwd)).toEqual([]);
+		await manager.shutdown();
+	});
+
+	it("awaits async spawn preparation and refuses to launch after cancellation", async () => {
+		const cwd = await tempCwd();
+		vi.stubEnv("TMPDIR", cwd);
+		vi.stubEnv("TMP", cwd);
+		vi.stubEnv("TEMP", cwd);
+		const apiMock = createExtensionApiMock();
+		const controller = new AbortController();
+		let resolvePreparation!: () => void;
+		let markPreparationStarted!: () => void;
+		const preparationStarted = new Promise<void>((resolve) => { markPreparationStarted = resolve; });
+		const preparation = new Promise<void>((resolve) => { resolvePreparation = resolve; });
+		let observedSignal: AbortSignal | undefined;
+		const manager = createBashTaskManager(apiMock.api, {
+			spawnHook: async (context) => {
+				observedSignal = context.signal;
+				markPreparationStarted();
+				await preparation;
+				return {
+					...context,
+					env: { ...context.env, ARIA_TEST_ASYNC: "prepared" },
+				};
+			},
+		});
+
+		const starting = manager.start({
+			command: "printf '%s\\n' \"$ARIA_TEST_ASYNC\"",
+			cwd,
+			backgroundAfterSeconds: 0.01,
+			signal: controller.signal,
+		});
+		await preparationStarted;
+		expect(observedSignal).toBe(controller.signal);
+		controller.abort();
+		resolvePreparation();
+
+		await expect(starting).rejects.toThrow("Bash task start was aborted.");
+		expect(manager.listSnapshots()).toEqual([]);
+		expect(await readdir(cwd)).toEqual([]);
+		await manager.shutdown();
+	});
+
 	it("configures the package extension factory with the same spawn hook", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();

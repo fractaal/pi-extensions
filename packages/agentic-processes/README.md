@@ -60,4 +60,7 @@ const extension = createAgenticProcessesExtension({
 
 The hook runs immediately before every Bash child spawn, including commands that
 start in the background or auto-background later. It receives a fresh copy of
-`process.env`; the package does not mutate process-global environment state.
+`process.env` and may return the context synchronously or as a Promise. When a
+start signal is supplied, the hook can use it to cancel asynchronous preparation;
+the package checks the signal again before spawning. The package does not mutate
+process-global environment state.
