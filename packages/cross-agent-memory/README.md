@@ -80,7 +80,7 @@ npm run test:installed --workspace @fractaal/pi-cross-agent-memory
 
 Installed-package acceptance packs with `prepack`, installs into a temporary consumer without host peers, and verifies ordinary Node exports plus Pi manifest discovery and memory injection. It uses an isolated home/profile, makes no model calls, and removes its temporary files.
 
-Releases use GitHub Actions OIDC, not local `npm publish`. See the [monorepo release guide](../../docs/releasing.md). The release tag is `cross-agent-memory-v<version>`; npm must authorize owner `fractaal`, repository `pi-extensions`, workflow filename `publish-npm.yml`, and environment `npm-publish` for this existing package.
+Releases use GitHub Actions OIDC, not local `npm publish`. See the [monorepo release guide](https://github.com/fractaal/pi-extensions/blob/main/docs/releasing.md). The release tag is `cross-agent-memory-v<version>`; npm must authorize owner `fractaal`, repository `pi-extensions`, workflow filename `publish-npm.yml`, and environment `npm-publish` for this existing package.
 
 ## Source attribution
 
