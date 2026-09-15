@@ -53,6 +53,9 @@ jobs:
       - name: Inspect package contents
         run: npm pack --dry-run --workspace "${{ steps.release.outputs.package }}"
 
+      - name: Verify installed package
+        run: npm run test:installed --workspace "${{ steps.release.outputs.package }}" --if-present
+
       - name: Revalidate live release refs
         run: node scripts/verify-release-source.mjs "${GITHUB_REF_NAME}"
 
