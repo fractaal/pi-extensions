@@ -1,5 +1,13 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/**/src/**/*.ts", "packages/**/tests/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
-  "exclude": ["packages/claude-bridge/**"]
+  "include": [
+    "packages/**/src/**/*.ts",
+    "packages/**/tests/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": [
+    "packages/claude-bridge/**",
+    "packages/goal-x/**"
+  ]
 }

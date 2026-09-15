@@ -12,7 +12,7 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
 
-async function createReleaseRepository(version = '0.1.1') {
+async function createReleaseRepository(version = '0.1.1', workspace = 'directive-roots') {
   const root = await mkdtemp(join(tmpdir(), 'pi-extensions-release-'));
   temporaryDirectories.push(root);
   const remote = join(root, 'origin.git');
@@ -23,9 +23,9 @@ async function createReleaseRepository(version = '0.1.1') {
   git(checkout, 'init', '-b', 'main');
   git(checkout, 'config', 'user.name', 'Release Test');
   git(checkout, 'config', 'user.email', 'release@example.com');
-  await mkdir(join(checkout, 'packages', 'directive-roots'), { recursive: true });
-  await writeFile(join(checkout, 'packages', 'directive-roots', 'package.json'), JSON.stringify({
-    name: '@fractaal/pi-directive-roots',
+  await mkdir(join(checkout, 'packages', workspace), { recursive: true });
+  await writeFile(join(checkout, 'packages', workspace, 'package.json'), JSON.stringify({
+    name: `@fractaal/pi-${workspace}`,
     version,
   }));
   git(checkout, 'add', '.');
@@ -80,6 +80,21 @@ describe('release source verification', () => {
       version: '0.1.1',
     });
     expect(await readFile(outputPath, 'utf8')).toContain('package=@fractaal/pi-directive-roots\n');
+  });
+
+  it.each([
+    ['cross-agent-memory', '0.3.1'],
+    ['goal-x', '0.28.9'],
+    ['todo', '0.1.3'],
+    ['context-window', '0.1.1'],
+  ])('accepts a migrated %s package through the same release verifier', async (workspace, version) => {
+    const { checkout } = await createReleaseRepository(version, workspace);
+    const tag = `${workspace}-v${version}`;
+    git(checkout, 'tag', tag);
+    git(checkout, 'push', 'origin', `refs/tags/${tag}`);
+    expect(JSON.parse(verify(checkout, tag))).toMatchObject({
+      package: `@fractaal/pi-${workspace}`, workspace, version,
+    });
   });
 
   it('rejects a tag whose version differs from the package', async () => {

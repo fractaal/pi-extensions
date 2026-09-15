@@ -10,7 +10,7 @@ Each workspace remains a separate npm package with its own version. Releases use
 - `prepack` builds the package. Generated artifacts are ignored by Git, included in the npm tarball, and verified before release.
 - Repository metadata points to this repository and the package's `repository.directory`. Preserve package licenses and upstream attribution.
 - Declare host Pi packages as peers and actual third-party runtime dependencies as dependencies. Do not broaden compatibility or alter a package's minimum supported host just to unify manifests.
-- The root typecheck runs shared checks and any workspace `typecheck` scripts. The root Vitest suite discovers `packages/**/tests/**/*.test.ts`; other test runners must be invoked explicitly. `test:installed` runs workspace acceptance scripts when present.
+- The root typecheck runs shared checks and workspace `typecheck` scripts. The root Vitest suite discovers `packages/**/tests/**/*.test.ts`, excluding the Goal-family Node suite, which runs explicitly via its workspace `test` script. `lint` retains the Goal-family lint gate; `test:installed` runs all workspace acceptance scripts when present. Goal-family acceptance covers Goal, Todo, and context-window together, packing and installing each independently.
 
 ## Trusted Publisher: configure per package
 
@@ -37,6 +37,7 @@ The GitHub `npm-publish` environment must admit package release tags (`*-v*`), a
    ```bash
    npm ci
    npm run typecheck
+   npm run lint
    npm test
    npm run build
    npm run test:installed
@@ -52,7 +53,7 @@ The GitHub `npm-publish` environment must admit package release tags (`*-v*`), a
    ```
 
    The general format is `<package-directory>-v<manifest-version>`. Creating/pushing the tag starts publication; it is not a dry run.
-4. Watch the workflow. It verifies the live tag, version, and ancestry in `main`; runs tests/typechecks; builds/packs the selected package; runs its installed-package acceptance if present; revalidates the refs; and publishes with provenance.
+4. Watch the workflow. It verifies the live tag, version, and ancestry in `main`; runs tests/typechecks/lint; builds/packs the selected package; runs all installed-package acceptance (including shared sibling coverage); revalidates the refs; and publishes with provenance.
 5. Verify the exact registry version:
 
    ```bash
@@ -62,6 +63,23 @@ The GitHub `npm-publish` environment must admit package release tags (`*-v*`), a
    Check that `gitHead` is the release commit and that provenance/attestations exist. A successful build is not proof of a successful publication.
 
 Rerun the same workflow/tag after a failure; never move a published version or its tag. The workflow skips an existing version only when its registry `gitHead` matches the release commit.
+
+## Batch releases
+
+One reviewed commit can contain several independent package version bumps. After every affected npm Trusted Publisher is verified, create each package tag at that same accepted commit and push the tags together:
+
+```bash
+# Replace this with the exact merged, verified commit.
+commit=<accepted-release-commit>
+git tag cross-agent-memory-v0.3.1 "$commit"
+git tag goal-x-v0.28.9 "$commit"
+git tag todo-v0.1.3 "$commit"
+git tag context-window-v0.1.1 "$commit"
+git push --atomic origin \
+  cross-agent-memory-v0.3.1 goal-x-v0.28.9 todo-v0.1.3 context-window-v0.1.1
+```
+
+GitHub starts the existing per-package publication workflow for each tag. The atomic push keeps the Git tag creation together; **npm publication is not atomic**. Verify every result; if a job fails, repair its configuration and rerun that same immutable tag. Do not change versions or fall back to a local publisher to recover a partial batch.
 
 ## Migrated packages and consumers
 
