@@ -3,18 +3,34 @@
   "private": true,
   "type": "module",
   "description": "fractaal Pi extension monorepo: agentic QoL extensions published under @fractaal.",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit && npm run typecheck --workspace @fractaal/pi-claude-bridge",
-    "test": "vitest run && npm test --workspace @fractaal/pi-claude-bridge",
-    "build": "npm run build --workspaces"
+    "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
+    "test": "vitest run && npm test --workspaces --if-present",
+    "test:installed": "npm run test:installed --workspaces --if-present",
+    "build": "npm run build --workspaces",
+    "lint:goal-family": "eslint packages/goal-x/extensions packages/todo/extensions packages/context-window/extensions packages/goal-x/tests",
+    "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.83.0-fractal.6",
-    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.83.0-fractal.6",
+    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.84.1",
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.84.1",
     "@sinclair/typebox": "0.34.49",
     "@types/node": "22.19.19",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "globals": "15.15.0",
+    "typescript-eslint": "8.67.0",
+    "@earendil-works/pi-tui": "npm:@fractaal/pi-tui@0.84.1",
+    "typebox": "1.3.16"
+  },
+  "overrides": {
+    "undici@8.5.0": "8.10.0",
+    "minimatch@10.2.5": "10.2.6",
+    "brace-expansion@^5.0.0": "5.0.9"
   }
 }

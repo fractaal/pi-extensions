@@ -1,0 +1,62 @@
+{
+  "name": "@fractaal/pi-todo",
+  "version": "0.1.3",
+  "description": "Portable branch-local Todo plans for Pi",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/todo.js",
+  "types": "./dist/todo.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/todo.d.ts",
+      "default": "./dist/todo.js"
+    },
+    "./contracts": {
+      "types": "./dist/todo-contract.d.ts",
+      "default": "./dist/todo-contract.js"
+    }
+  },
+  "files": [
+    "dist",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "todo"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/todo"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/todo#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/todo.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

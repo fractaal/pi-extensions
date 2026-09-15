@@ -47,11 +47,17 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       - name: Build package
         run: npm run build --workspace "${{ steps.release.outputs.package }}"
 
       - name: Inspect package contents
         run: npm pack --dry-run --workspace "${{ steps.release.outputs.package }}"
+
+      - name: Verify installed packages
+        run: npm run test:installed
 
       - name: Revalidate live release refs
         run: node scripts/verify-release-source.mjs "${GITHUB_REF_NAME}"

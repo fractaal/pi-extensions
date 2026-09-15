@@ -1,0 +1,67 @@
+{
+  "name": "@fractaal/pi-context-window",
+  "version": "0.1.1",
+  "description": "Portable per-session and per-model context-window budgets for Pi",
+  "license": "MIT",
+  "author": "pi-context-window contributors",
+  "type": "module",
+  "main": "./dist/context-window.js",
+  "types": "./dist/context-window.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/context-window.d.ts",
+      "default": "./dist/context-window.js"
+    },
+    "./contracts": {
+      "types": "./dist/context-window-contract.d.ts",
+      "default": "./dist/context-window-contract.js"
+    }
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "context-window"
+  ],
+  "files": [
+    "dist",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/context-window.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "proper-lockfile": "4.1.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": ">=0.84.1"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/context-window"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/context-window#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  }
+}

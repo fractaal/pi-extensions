@@ -1,0 +1,54 @@
+{
+  "name": "@fractaal/pi-cross-agent-memory",
+  "version": "0.3.1",
+  "type": "module",
+  "description": "Portable Pi extension that injects Claude Code and Codex memory indexes for projects encountered during a Pi session.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "memory",
+    "claude",
+    "codex"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/cross-agent-memory"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/cross-agent-memory#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.build.json",
+    "test:installed": "node tests/installed-package.mjs",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

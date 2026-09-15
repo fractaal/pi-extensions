@@ -1,0 +1,76 @@
+{
+  "name": "@fractaal/pi-goal-x",
+  "version": "0.28.9",
+  "description": "Portable single-goal runtime for Pi",
+  "license": "MIT",
+  "author": "pi-goal-x contributors",
+  "type": "module",
+  "main": "./dist/goal.js",
+  "types": "./dist/goal.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/goal.d.ts",
+      "default": "./dist/goal.js"
+    },
+    "./contracts": {
+      "types": "./dist/goal-contract.d.ts",
+      "default": "./dist/goal-contract.js"
+    },
+    "./transcript-events": {
+      "types": "./dist/goal-transcript-events.d.ts",
+      "default": "./dist/goal-transcript-events.js"
+    }
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "goal",
+    "agent-loop"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/goal-x"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/goal-x#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "files": [
+    "dist",
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "docs/architecture.md"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/goal.ts"
+    ],
+    "image": "https://github.com/tmonk/pi-goal-x/raw/main/screenshot.png"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:installed": "node tests/installed-package-acceptance.mjs",
+    "lint": "npm run lint:goal-family --prefix ../.."
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  }
+}
