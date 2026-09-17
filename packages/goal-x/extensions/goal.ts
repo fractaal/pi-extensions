@@ -16,6 +16,7 @@ import {
 	GOAL_PAUSE_REASON_MAX_LENGTH,
 	GOAL_PAUSE_SUGGESTED_ACTION_MAX_LENGTH,
 	GOAL_UNBLOCK_CONDITION_MAX_LENGTH,
+	GOAL_WAIT_MIN_SECONDS,
 	GOAL_WAIT_MAX_SECONDS,
 	GOAL_WAITING_FOR_MAX_LENGTH,
 	GOAL_WAKE_ENTRY,
@@ -583,14 +584,14 @@ export default function goalExtension(
 	pi.registerTool({
 		name: "wait_goal",
 		label: "Wait Goal",
-		description: `Choose when the active Goal next continues, up to ${GOAL_WAIT_MAX_SECONDS} seconds from now, instead of continuing immediately. The Goal stays active; any user message or event before then wakes you sooner.`,
+		description: `Choose when the active Goal next continues, from ${GOAL_WAIT_MIN_SECONDS} to ${GOAL_WAIT_MAX_SECONDS} seconds from now, instead of continuing immediately. The Goal stays active; any user message or event before then wakes you sooner.`,
 		promptSnippet: "Wait for external state before the Goal continues.",
 		promptGuidelines: [
 			"Use wait_goal only when no safe, in-scope action can advance the Goal until external state changes, such as a build, deploy, review, or long-running process. It is not a way to defer work that can be done now.",
 			"Match delaySeconds to what you are waiting for: one check when it should be done beats many short polls. If it is still not ready when you wake, wait again.",
 		],
 		parameters: Type.Object({
-			delaySeconds: Type.Integer({ minimum: 1, maximum: GOAL_WAIT_MAX_SECONDS, description: "Seconds from now until the Goal continues." }),
+			delaySeconds: Type.Integer({ minimum: GOAL_WAIT_MIN_SECONDS, maximum: GOAL_WAIT_MAX_SECONDS, description: "Seconds from now until the Goal continues." }),
 			waitingFor: Type.String({ minLength: 1, maxLength: GOAL_WAITING_FOR_MAX_LENGTH, description: "The concrete external condition being waited on. Shown to the user." }),
 		}, { additionalProperties: false }),
 		executionMode: "sequential",
@@ -598,8 +599,8 @@ export default function goalExtension(
 			requireIdleSupport(ctx);
 			const goal = currentGoal("active");
 			const waitingFor = boundedRequiredText(params.waitingFor, "Goal wait condition", GOAL_WAITING_FOR_MAX_LENGTH);
-			if (!Number.isInteger(params.delaySeconds) || params.delaySeconds < 1 || params.delaySeconds > GOAL_WAIT_MAX_SECONDS) {
-				throw new Error(`delaySeconds must be an integer from 1 to ${GOAL_WAIT_MAX_SECONDS}.`);
+			if (!Number.isInteger(params.delaySeconds) || params.delaySeconds < GOAL_WAIT_MIN_SECONDS || params.delaySeconds > GOAL_WAIT_MAX_SECONDS) {
+				throw new Error(`delaySeconds must be an integer from ${GOAL_WAIT_MIN_SECONDS} to ${GOAL_WAIT_MAX_SECONDS}.`);
 			}
 			cancelWakeTimer();
 			wake = { goalId: goal.id, wakeAt: Date.now() + params.delaySeconds * 1000 };

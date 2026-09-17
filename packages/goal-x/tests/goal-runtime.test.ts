@@ -14,6 +14,7 @@ import {
 	GOAL_CONTINUATION_MESSAGE,
 	GOAL_OBJECTIVE_MAX_LENGTH,
 	GOAL_UNBLOCK_CONDITION_MAX_LENGTH,
+	GOAL_WAIT_MIN_SECONDS,
 	GOAL_WAIT_MAX_SECONDS,
 	GOAL_WAKE_ENTRY,
 	GOAL_PROPOSAL_EVENT,
@@ -511,6 +512,7 @@ test("a pending wait survives restart and an elapsed or ended wait continues imm
 test("wait_goal rejects out-of-bound delays and inactive Goals without side effects", async (t) => {
 	const harness = await startedGoal(t);
 	const before = structuredClone(harness.entries);
+	await assert.rejects(() => executeTool(harness, "wait_goal", { delaySeconds: GOAL_WAIT_MIN_SECONDS - 1, waitingFor: "too short" }), /delaySeconds/);
 	await assert.rejects(() => executeTool(harness, "wait_goal", { delaySeconds: GOAL_WAIT_MAX_SECONDS + 1, waitingFor: "too long" }), /delaySeconds/);
 	await assert.rejects(() => executeTool(harness, "wait_goal", { delaySeconds: 60, waitingFor: "   " }), /requires non-empty text/);
 	assert.deepEqual(harness.entries, before);
