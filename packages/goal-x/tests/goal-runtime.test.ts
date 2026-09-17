@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test, type TestContext } from "node:test";
 import goalExtension from "../extensions/goal.ts";
 import {
 	GOAL_AUDIT_REJECTION_REPORT_MAX_LENGTH,
@@ -14,6 +14,8 @@ import {
 	GOAL_CONTINUATION_MESSAGE,
 	GOAL_OBJECTIVE_MAX_LENGTH,
 	GOAL_UNBLOCK_CONDITION_MAX_LENGTH,
+	GOAL_WAIT_MAX_SECONDS,
+	GOAL_WAKE_ENTRY,
 	GOAL_PROPOSAL_EVENT,
 	GOAL_AUDIT_EVENT,
 	GOAL_STATE_EVENT,
@@ -426,6 +428,99 @@ test("every normal agent end schedules one continuation without duplicating a wa
 	await harness.run("agent_end", { messages: [{ role: "assistant", stopReason: "stop", content: [] }] });
 	harness.runIdle();
 	assert.equal(harness.sent.length, 2, "blocked Goal schedules no continuation after normal settlement");
+});
+
+const NORMAL_END = { messages: [{ role: "assistant", stopReason: "stop", content: [] }] };
+
+async function startedGoal(t: TestContext) {
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	const harness = harnessWithGoal(async () => ({ approved: false, output: "not used\n<disapproved/>" }));
+	await harness.run("session_start", { reason: "startup" });
+	harness.confirmations.push(true);
+	await executeTool(harness, "propose_goal", { objective: "Ship once CI is green" });
+	harness.runIdle();
+	await harness.run("before_agent_start", { systemPrompt: "BASE" });
+	return harness;
+}
+
+test("wait_goal defers the next continuation until the chosen delay while the Goal stays active", async (t) => {
+	const harness = await startedGoal(t);
+	const result = await executeTool(harness, "wait_goal", { delaySeconds: 300, waitingFor: "CI run 42 to finish" });
+	assert.equal(result.terminate, true);
+	assert.equal(latestGoalState(harness.entries).goal?.status, "active", "waiting is not blocking or pausing");
+	const receipt = [...harness.events.emitted].reverse().find((event) => event.channel === GOAL_TRANSCRIPT_EVENT)?.data as { kind?: string; reason?: string; message?: string };
+	assert.equal(receipt.kind, "goal_waiting");
+	assert.equal(receipt.reason, "CI run 42 to finish");
+	assert.equal(receipt.message, "Waiting up to 5m: CI run 42 to finish");
+
+	await harness.run("agent_end", NORMAL_END);
+	harness.runIdle();
+	t.mock.timers.tick(299_000);
+	assert.equal(harness.sent.length, 1, "no continuation before the chosen wake");
+	t.mock.timers.tick(1_000);
+	assert.equal(harness.sent.length, 2, "the ordinary continuation fires at the chosen wake");
+	assert.deepEqual(harness.sent[1], harness.sent[0]);
+
+	await harness.run("before_agent_start", { systemPrompt: "BASE" });
+	await harness.run("agent_end", NORMAL_END);
+	harness.runIdle();
+	assert.equal(harness.sent.length, 3, "without a new wait the Goal continues immediately");
+});
+
+test("any other run preempts a pending wait and continuation falls back to immediate", async (t) => {
+	const harness = await startedGoal(t);
+	await executeTool(harness, "wait_goal", { delaySeconds: 3_600, waitingFor: "the deploy to finish" });
+	await harness.run("agent_end", NORMAL_END);
+	harness.runIdle();
+
+	await harness.run("before_agent_start", { systemPrompt: "BASE" });
+	assert.deepEqual([...harness.entries].reverse().find((entry) => entry.customType === GOAL_WAKE_ENTRY)?.data, {
+		schemaVersion: 1,
+		goalId: latestGoalState(harness.entries).goal?.id,
+		wakeAt: null,
+	}, "the ended wait is durable");
+	await harness.run("agent_end", NORMAL_END);
+	harness.runIdle();
+	assert.equal(harness.sent.length, 2, "the preempting run continues immediately when it settles");
+	t.mock.timers.tick(3_600_000);
+	assert.equal(harness.sent.length, 2, "the preempted timer never fires a second continuation");
+});
+
+test("a pending wait survives restart and an elapsed or ended wait continues immediately", async (t) => {
+	const harness = await startedGoal(t);
+	await executeTool(harness, "wait_goal", { delaySeconds: 600, waitingFor: "the review to land" });
+	await harness.run("session_shutdown", {});
+
+	t.mock.timers.tick(200_000);
+	const restarted = createHarness(structuredClone(harness.entries));
+	goalExtension(restarted.pi);
+	await restarted.run("session_start", { reason: "startup" });
+	restarted.runIdle();
+	t.mock.timers.tick(399_000);
+	assert.equal(restarted.sent.length, 0, "restart keeps the original wake time");
+	t.mock.timers.tick(1_000);
+	assert.equal(restarted.sent.length, 1);
+
+	const late = createHarness(structuredClone(harness.entries));
+	goalExtension(late.pi);
+	await late.run("session_start", { reason: "startup" });
+	late.runIdle();
+	assert.equal(late.sent.length, 1, "a wake that elapsed while the host was down continues at once");
+});
+
+test("wait_goal rejects out-of-bound delays and inactive Goals without side effects", async (t) => {
+	const harness = await startedGoal(t);
+	const before = structuredClone(harness.entries);
+	await assert.rejects(() => executeTool(harness, "wait_goal", { delaySeconds: GOAL_WAIT_MAX_SECONDS + 1, waitingFor: "too long" }), /delaySeconds/);
+	await assert.rejects(() => executeTool(harness, "wait_goal", { delaySeconds: 60, waitingFor: "   " }), /requires non-empty text/);
+	assert.deepEqual(harness.entries, before);
+
+	await executeTool(harness, "wait_goal", { delaySeconds: 600, waitingFor: "the build" });
+	await executeTool(harness, "set_goal_blocked", blockProof("Credentials were revoked."));
+	await assert.rejects(() => executeTool(harness, "wait_goal", { delaySeconds: 60, waitingFor: "the build" }), /The Goal is blocked, not active\./);
+	await executeTool(harness, "resume_goal", {});
+	harness.runIdle();
+	assert.equal(harness.sent.length, 2, "leaving the active state ends the wait, so resume continues immediately");
 });
 
 test("Pi retry outcomes converge at idle and terminal failures do not loop", async () => {

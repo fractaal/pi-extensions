@@ -10,6 +10,10 @@ export const GOAL_PROPOSAL_EVENT = "pi-goal:proposal";
 export const GOAL_AUDIT_EVENT = "pi-goal:audit";
 export const GOAL_AUDIT_EVENT_VERSION = 1 as const;
 export const GOAL_CONTINUATION_MESSAGE = "pi-goal-continuation-v1";
+// A model-chosen wake lives in its own entry so the Goal state shape never changes.
+export const GOAL_WAKE_ENTRY = "pi-goal-wake-v1";
+export const GOAL_WAIT_MAX_SECONDS = 3_600;
+export const GOAL_WAITING_FOR_MAX_LENGTH = 600;
 export const GOAL_ID_MAX_LENGTH = 256;
 export const GOAL_OBJECTIVE_MAX_LENGTH = 128 * 1024;
 export const GOAL_TIMESTAMP_MAX_LENGTH = 64;

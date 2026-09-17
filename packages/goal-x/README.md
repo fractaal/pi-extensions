@@ -16,6 +16,7 @@ Model tools:
 - `propose_goal({ objective })`
 - `tweak_goal({ objective })`
 - `set_goal_blocked({ blocker, evidence, whyNoAutonomousPathRemains, unblockCondition })`
+- `wait_goal({ delaySeconds, waitingFor })`
 - `resume_goal()`
 - `abandon_goal({ reason })`
 - `complete_goal({ summary })`
@@ -27,7 +28,7 @@ Events:
 - `pi-goal:transcript-event` — bounded lifecycle receipt
 - `pi-goal:request-state` — asks the producer to replay current state and proposal
 
-Goal state lives only in Pi session custom entries. It is replayed on session start, tree navigation, and compaction. Autonomous continuation appends the generic durable message `Continue the Goal.` after each normal settled run while the Goal remains active. The model can stop continuation only by making the fully evidenced `set_goal_blocked` claim. That transition emits `goal_blocked` and maps into the existing internal `paused` state by encoding the complete proof in the compatible `pause.reason` and `pause.suggestedAction` fields. The native `/goal-pause` command remains a genuine human pause and emits `goal_paused`. At the start of each run, Goal adds one deterministic semantic block to Pi's system prompt; accounting revisions, timestamps, usage, and active-time changes do not alter those prompt bytes. Pi core owns provider retry and compaction recovery. The completion auditor receives an OS-sandboxed read-only shell when Bubblewrap is available; on platforms without that boundary, it receives only Pi's read/grep/find/ls tools.
+Goal state lives only in Pi session custom entries. It is replayed on session start, tree navigation, and compaction. Autonomous continuation appends the generic durable message `Continue the Goal.` after each normal settled run while the Goal remains active. The model can delay the next continuation by up to one hour with `wait_goal`, which keeps the Goal active, emits `goal_waiting`, and is preempted by any earlier run. The model can stop continuation only by making the fully evidenced `set_goal_blocked` claim. That transition emits `goal_blocked` and maps into the existing internal `paused` state by encoding the complete proof in the compatible `pause.reason` and `pause.suggestedAction` fields. The native `/goal-pause` command remains a genuine human pause and emits `goal_paused`. At the start of each run, Goal adds one deterministic semantic block to Pi's system prompt; accounting revisions, timestamps, usage, and active-time changes do not alter those prompt bytes. Pi core owns provider retry and compaction recovery. The completion auditor receives an OS-sandboxed read-only shell when Bubblewrap is available; on platforms without that boundary, it receives only Pi's read/grep/find/ls tools.
 
 ## Todo
 
