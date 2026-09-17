@@ -16,6 +16,10 @@ import {
 	GOAL_PAUSE_REASON_MAX_LENGTH,
 	GOAL_PAUSE_SUGGESTED_ACTION_MAX_LENGTH,
 	GOAL_UNBLOCK_CONDITION_MAX_LENGTH,
+	GOAL_WAIT_MIN_SECONDS,
+	GOAL_WAIT_MAX_SECONDS,
+	GOAL_WAITING_FOR_MAX_LENGTH,
+	GOAL_WAKE_ENTRY,
 	GOAL_PROPOSAL_EVENT,
 	GOAL_AUDIT_EVENT,
 	GOAL_AUDIT_EVENT_VERSION,
@@ -115,6 +119,26 @@ function loadGoalState(ctx: ExtensionContext): GoalState | null {
 	return null;
 }
 
+type GoalWake = { goalId: string; wakeAt: number };
+
+/** The newest wake entry on the branch wins; a null wakeAt records that the wait ended. */
+function loadGoalWake(ctx: ExtensionContext): GoalWake | null {
+	const branch = ctx.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index] as { type?: string; customType?: string; data?: unknown };
+		if (entry.type !== "custom" || entry.customType !== GOAL_WAKE_ENTRY) continue;
+		const data = entry.data !== null && typeof entry.data === "object" ? entry.data as { goalId?: unknown; wakeAt?: unknown } : {};
+		const wakeAt = typeof data.wakeAt === "string" ? Date.parse(data.wakeAt) : Number.NaN;
+		return typeof data.goalId === "string" && Number.isFinite(wakeAt) ? { goalId: data.goalId, wakeAt } : null;
+	}
+	return null;
+}
+
+function durationText(seconds: number): string {
+	if (seconds < 60) return `${seconds}s`;
+	return seconds % 60 === 0 ? `${seconds / 60}m` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
 function hasMigrationMarker(ctx: ExtensionContext, status?: string): boolean {
 	return ctx.sessionManager.getBranch().some((item) => {
 		const entry = item as { type?: string; customType?: string; data?: unknown };
@@ -145,6 +169,7 @@ function renderGoalSystemPrompt(state: GoalState): string {
 	];
 	if (goal.status === "active") {
 		lines.push("An active Goal continues by default. Do not stop at a progress report: if any safe, in-scope action can materially advance any part of the objective, take it.");
+		lines.push("When the only remaining progress depends on external state that takes time, call wait_goal instead of polling or stopping.");
 		lines.push("set_goal_blocked is an exceptional factual claim that autonomous progress is currently impossible. It is not a way to defer work, request review, or hand back an unfinished objective.");
 		lines.push("Call abandon_goal only when the Goal should be abandoned, or complete_goal only after the objective is genuinely complete.");
 	} else if (goal.status === "paused" && isGoalBlockedPause(goal.pause)) {
@@ -187,6 +212,8 @@ export default function goalExtension(
 	let widgetContext: ExtensionContext | null = null;
 	let migrationCandidates: LegacyGoalCandidate[] = [];
 	let idleContinuationCancel: (() => void) | undefined;
+	let wake: GoalWake | null = null;
+	let wakeTimer: ReturnType<typeof setTimeout> | undefined;
 
 	function emitState(): void {
 		pi.events.emit(GOAL_STATE_EVENT, structuredClone(state));
@@ -234,6 +261,7 @@ export default function goalExtension(
 			goal: nextGoal ? structuredClone(nextGoal) : null,
 		};
 		if (!isGoalState(nextState)) throw new Error("Goal mutation exceeds the exported producer state contract.");
+		if (nextState.goal?.status !== "active") endWait();
 		state = nextState;
 		pi.appendEntry(GOAL_STATE_ENTRY, state);
 		emitState();
@@ -288,12 +316,37 @@ export default function goalExtension(
 		}, { deliverAs: "followUp", triggerTurn: true });
 	}
 
+	function cancelWakeTimer(): void {
+		if (wakeTimer) clearTimeout(wakeTimer);
+		wakeTimer = undefined;
+	}
+
+	/** Ends a model-chosen wait durably, so a restart never re-arms a wait that already ended. */
+	function endWait(): void {
+		cancelWakeTimer();
+		if (!wake) return;
+		pi.appendEntry(GOAL_WAKE_ENTRY, { schemaVersion: GOAL_SCHEMA_VERSION, goalId: wake.goalId, wakeAt: null });
+		wake = null;
+	}
+
 	function requestContinuation(ctx: ExtensionContext): void {
 		if (!state.goal || state.goal.status !== "active" || !state.goal.autoContinue || idleContinuationCancel) return;
 		requireIdleSupport(ctx);
 		idleContinuationCancel = ctx.onIdle(() => {
 			idleContinuationCancel = undefined;
-			continueGoal();
+			if (wakeTimer) return;
+			const remaining = wake && wake.goalId === state.goal?.id ? wake.wakeAt - Date.now() : 0;
+			if (remaining <= 0) {
+				endWait();
+				continueGoal();
+				return;
+			}
+			wakeTimer = setTimeout(() => {
+				wakeTimer = undefined;
+				endWait();
+				continueGoal();
+			}, Math.min(remaining, GOAL_WAIT_MAX_SECONDS * 1000));
+			wakeTimer.unref?.();
 		});
 	}
 
@@ -529,6 +582,37 @@ export default function goalExtension(
 	});
 
 	pi.registerTool({
+		name: "wait_goal",
+		label: "Wait Goal",
+		description: `Choose when the active Goal next continues, from ${GOAL_WAIT_MIN_SECONDS} to ${GOAL_WAIT_MAX_SECONDS} seconds from now, instead of continuing immediately. The Goal stays active; any user message or event before then wakes you sooner.`,
+		promptSnippet: "Wait for external state before the Goal continues.",
+		promptGuidelines: [
+			"Use wait_goal only when no safe, in-scope action can advance the Goal until external state changes, such as a build, deploy, review, or long-running process. It is not a way to defer work that can be done now.",
+			"Match delaySeconds to what you are waiting for: one check when it should be done beats many short polls. If it is still not ready when you wake, wait again.",
+		],
+		parameters: Type.Object({
+			delaySeconds: Type.Integer({ minimum: GOAL_WAIT_MIN_SECONDS, maximum: GOAL_WAIT_MAX_SECONDS, description: "Seconds from now until the Goal continues." }),
+			waitingFor: Type.String({ minLength: 1, maxLength: GOAL_WAITING_FOR_MAX_LENGTH, description: "The concrete external condition being waited on. Shown to the user." }),
+		}, { additionalProperties: false }),
+		executionMode: "sequential",
+		async execute(_id, params, _signal, _update, ctx) {
+			requireIdleSupport(ctx);
+			const goal = currentGoal("active");
+			const waitingFor = boundedRequiredText(params.waitingFor, "Goal wait condition", GOAL_WAITING_FOR_MAX_LENGTH);
+			if (!Number.isInteger(params.delaySeconds) || params.delaySeconds < GOAL_WAIT_MIN_SECONDS || params.delaySeconds > GOAL_WAIT_MAX_SECONDS) {
+				throw new Error(`delaySeconds must be an integer from ${GOAL_WAIT_MIN_SECONDS} to ${GOAL_WAIT_MAX_SECONDS}.`);
+			}
+			cancelWakeTimer();
+			wake = { goalId: goal.id, wakeAt: Date.now() + params.delaySeconds * 1000 };
+			const wakeAt = new Date(wake.wakeAt).toISOString();
+			pi.appendEntry(GOAL_WAKE_ENTRY, { schemaVersion: GOAL_SCHEMA_VERSION, goalId: goal.id, wakeAt });
+			const detail = `up to ${durationText(params.delaySeconds)}: ${waitingFor}`;
+			publishReceipt({ kind: "goal_waiting", level: "info", ...goalFields(goal), reason: waitingFor, message: `Waiting ${detail}`, tuiMessage: `Goal waiting ${detail}` });
+			return { content: [{ type: "text", text: `The Goal continues at ${wakeAt} (in ${durationText(params.delaySeconds)}). Any user message or event before then wakes you sooner. End your turn now.` }], details: state, terminate: true };
+		},
+	});
+
+	pi.registerTool({
 		name: "resume_goal",
 		label: "Resume Goal",
 		description: "Resume the blocked or human-paused Goal from its exact current state and restart autonomous continuation.",
@@ -659,6 +743,8 @@ export default function goalExtension(
 	});
 
 	pi.on("before_agent_start", (event) => {
+		// Any run preempts a pending wait; the model waits again if it still needs to.
+		endWait();
 		lastAccountedAt = state.goal?.status === "active" ? Date.now() : null;
 		const goalPrompt = renderGoalSystemPrompt(state);
 		if (!goalPrompt) return;
@@ -696,6 +782,8 @@ export default function goalExtension(
 	pi.on("session_start", (_event, ctx) => {
 		requireIdleSupport(ctx);
 		loadOrMigrate(ctx);
+		cancelWakeTimer();
+		wake = loadGoalWake(ctx);
 		proposalSequence = loadProposalRevision(ctx);
 		proposal = { schemaVersion: GOAL_SCHEMA_VERSION, revision: proposalSequence, proposal: null };
 		emitState();
@@ -707,6 +795,8 @@ export default function goalExtension(
 	pi.on("session_tree", (_event, ctx) => {
 		requireIdleSupport(ctx);
 		loadOrMigrate(ctx);
+		cancelWakeTimer();
+		wake = loadGoalWake(ctx);
 		proposalSequence = loadProposalRevision(ctx);
 		proposal = { schemaVersion: GOAL_SCHEMA_VERSION, revision: proposalSequence, proposal: null };
 		emitState();
@@ -738,6 +828,7 @@ export default function goalExtension(
 
 	pi.on("session_shutdown", () => {
 		cancelContinuation();
+		cancelWakeTimer();
 		if (auditing && auditingGoalId) emitAuditState(false, auditingGoalId);
 		widget = null;
 		widgetContext = null;

@@ -7,6 +7,7 @@ export const GOAL_TRANSCRIPT_EVENT_KINDS = [
 	"goal_started",
 	"goal_updated",
 	"goal_blocked",
+	"goal_waiting",
 	"goal_paused",
 	"goal_resumed",
 	"goal_completion_rejected",
@@ -61,6 +62,7 @@ export const GoalTranscriptEventSchema = Type.Union([
 		kind: Type.Union([
 			Type.Literal("goal_started"),
 			Type.Literal("goal_updated"),
+			Type.Literal("goal_waiting"),
 			Type.Literal("goal_paused"),
 			Type.Literal("goal_resumed"),
 			Type.Literal("goal_completion_rejected"),
