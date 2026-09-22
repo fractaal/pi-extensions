@@ -3,6 +3,7 @@
 // Extracted from index.ts so tests can import without activating the extension.
 
 export const FABLE_MODEL_ID = "claude-fable-5";
+export const OPUS_5_5_MODEL_ID = "claude-opus-5-5";
 export const OPUS_5_MODEL_ID = "claude-opus-5";
 export const FABLE_FALLBACK_MODEL_ID = "claude-opus-4-8";
 export const SONNET_5_MODEL_ID = "claude-sonnet-5";
@@ -13,6 +14,7 @@ export function fallbackModelForPrimaryModel(modelId: string): string | undefine
 
 export const MODEL_IDS_IN_ORDER = [
 	FABLE_MODEL_ID,
+	OPUS_5_5_MODEL_ID,
 	OPUS_5_MODEL_ID,
 	FABLE_FALLBACK_MODEL_ID,
 	"claude-opus-4-7",
@@ -36,6 +38,15 @@ const FALLBACK_MODELS: Record<string, BridgeModelMetadata> = {
 	[FABLE_MODEL_ID]: {
 		id: FABLE_MODEL_ID,
 		name: "Claude Fable 5",
+		reasoning: true,
+		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+		input: ["text", "image"],
+		contextWindow: 1000000,
+		maxTokens: 128000,
+	},
+	[OPUS_5_5_MODEL_ID]: {
+		id: OPUS_5_5_MODEL_ID,
+		name: "Claude Opus 5.5",
 		reasoning: true,
 		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
 		input: ["text", "image"],
