@@ -13,6 +13,8 @@ Maintained from [`@vanillagreen/pi-claude-bridge`](https://github.com/vanillagre
 - Pi tool calls run on Pi; Claude Code handles reasoning.
 - Tool-use turns block until Pi-delivered tool results reach Claude Code, including persistent subagent panes.
 - Session continuity across normal turns, `/compact`, tree navigation, and abort recovery.
+- Steering: a message sent while a tool runs reaches Claude in the same turn, right after the tool result.
+- When a session outgrows the context window Claude Code allows for your account, Pi compacts and continues the turn automatically.
 - Thinking-level forwarding with summarized Opus thinking display.
 - Optional Claude effort overrides (`xhigh` → `max` for Opus 4.8).
 - MCP isolation and Claude cloud-MCP suppression to keep tokens lean.
@@ -109,7 +111,7 @@ If Claude Code accepts a turn but produces no visible output, the bridge returns
 
 Set `CLAUDE_BRIDGE_DEBUG=1` to write bridge logs to `~/.pi/agent/claude-bridge.log` and per-query Claude Code CLI logs under `~/.pi/agent/cc-cli-logs/`.
 
-Tool-result integrity problems are surfaced even when debug logging is off. Pi shows an error notification and writes a diagnostic file to `~/.pi/agent/claude-bridge-diag.log` so lost or mismatched tool output is visible.
+Tool-result integrity problems are recorded even when debug logging is off, in the private diagnostic file `~/.pi/agent/claude-bridge-diag.log`. They are not shown in the conversation: the bridge rebuilds Claude's session from Pi history before the next turn.
 
 Startup failures include the resolved Claude executable and working directory, which makes missing binaries and wrong launch directories easier to fix.
 
