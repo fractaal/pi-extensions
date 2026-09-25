@@ -381,12 +381,7 @@ function reportSyntheticToolResultRepair(missing: MissingToolResult[], context: 
 			missing: missing.slice(0, 50),
 			...context,
 		});
-		safeNotify(
-			`Claude bridge: ${missing.length} missing tool result(s) repaired with "[no tool result recorded]"` +
-			`${toolNameSummary.length ? ` for ${toolNameSummary.join(", ")}` : ""}. ` +
-			`Real tool output was lost before Claude session import; see ${diagLogPath()}.`,
-			"error",
-		);
+		debug(`convertAndImportMessages: repaired ${missing.length} unpaired tool call(s)${toolNameSummary.length ? ` for ${toolNameSummary.join(", ")}` : ""}`);
 	} catch (error) {
 		debug("reportSyntheticToolResultRepair failed:", error);
 	}
@@ -404,7 +399,6 @@ export function reportToolResultMismatch(queryCtx: QueryContext, reason: string,
 		if (bridgeRuntime().sharedSession) {
 			bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, ...(opts.forceRotate ? { forceRotate: true } : {}) };
 		}
-		const toolNameSummary = compactToolNameSummary(progress.toolNames);
 		diagDump("tool_result_delivery_mismatch", {
 			reason,
 			cwd,
@@ -417,14 +411,6 @@ export function reportToolResultMismatch(queryCtx: QueryContext, reason: string,
 				forceRotate: bridgeRuntime().sharedSession.forceRotate === true,
 			} : null,
 		});
-		safeNotify(
-			`Claude bridge: tool result delivery interrupted during ${reason}; ` +
-			`delivered ${progress.deliveredCount}/${progress.expectedCount}, resolved ${progress.resolvedCount}/${progress.expectedCount}, ` +
-			`waiting=${progress.waitingCount}, queued=${progress.queuedCount}, unmatched=${progress.unmatchedResultCount}` +
-			`${toolNameSummary.length ? `, tools=${toolNameSummary.join(", ")}` : ""}. ` +
-			`Claude session will rebuild before the next turn; see ${diagLogPath()}.`,
-			"error",
-		);
 		return true;
 	} catch (error) {
 		debug("reportToolResultMismatch failed:", error);
@@ -539,7 +525,7 @@ function runWithBridgeRuntime<T>(runtime: BridgeRuntimeState, callback: () => T)
 }
 
 const RATE_LIMIT_AUTO_RESUME_EVENT = "vstack:rate-limit";
-const RATE_LIMIT_TOKEN = "\x1b[31m[rate-limit]\x1b[39m";
+const RATE_LIMIT_TOKEN = "[rate-limit]";
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000;
 export const STREAM_IDLE_BACKOFF_HINT_MS = 60_000;
 export const STREAM_IDLE_TIMEOUT_ENV = "CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT";
@@ -942,11 +928,11 @@ function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknown }): v
 	timer.unref?.();
 }
 
-// Convert pi messages to Anthropic API format for session import.
-// Lossy: non-Anthropic thinking blocks are dropped (no valid signature). User and
-// tool-result image blocks are preserved when possible. If assistant blocks are
-// otherwise incompatible, convertPiMessages emits a text placeholder so the record
-// sequence stays valid before repairToolPairing runs.
+// Convert Pi messages (already normalized by transformMessages) to Anthropic API
+// format for session import. Thinking without a Claude signature is dropped;
+// user and tool-result image blocks are preserved when possible. If assistant
+// blocks are otherwise incompatible, convertPiMessages emits a text placeholder
+// so the record sequence stays valid before repairToolPairing runs.
 function convertAndImportMessages(
 	session: ReturnType<typeof createSession>,
 	messages: Context["messages"],
@@ -1041,10 +1027,10 @@ interface SyncResult {
 	rescue: boolean;
 }
 
-// Read the session file we just wrote and sanity-check it. Warns instead of
-// throwing — CC may be more tolerant than our checks, so a false positive
-// shouldn't block the user. Pure logic is in session-verify.js; this wrapper
-// fans each warning out to debug log + Pi UI notification + diagDump.
+// Read the session file we just wrote and sanity-check it. Records problems
+// instead of throwing — CC may be more tolerant than our checks, so a false
+// positive shouldn't block the user. Pure logic is in session-verify.js; this
+// wrapper writes each warning to the debug log and the diagnostic log.
 function verifyWrittenSession(
 	jsonlPath: string,
 	expectedSessionId: string,
@@ -1054,13 +1040,6 @@ function verifyWrittenSession(
 	const warnings = _verifyWrittenSession(jsonlPath, expectedSessionId, expectedRecordCount);
 	for (const msg of warnings) {
 		debug(`WARNING session verify: ${msg}`);
-		bridgeRuntime().piUI?.notify(
-			`Session file issue: ${msg}\n` +
-			`cwd=${cwd} realpath=${safeRealpath(cwd)} CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"}\n` +
-			`Please copy and paste this message into a new issue at https://github.com/elidickinson/pi-claude-bridge/issues/new` +
-			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
-			"warning",
-		);
 		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null });
 	}
 }
@@ -1949,7 +1928,6 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		if (flushedLateToolCalls) debug(`provider: emitted late tool calls on result-delivery stream`);
 		else if (queryCtx.pendingToolCalls.size > 0) {
 			debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
-			bridgeRuntime().piUI?.notify(`Claude bridge: ${queryCtx.pendingToolCalls.size} tool handler(s) still waiting — provider may be stuck`, "warning");
 		}
 
 		if (bridgeRuntime().sharedSession) {
