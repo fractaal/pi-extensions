@@ -1,6 +1,6 @@
 {
   "name": "@fractaal/pi-claude-bridge",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Pi provider bridge that runs Claude Code through the Claude Agent SDK.",
   "type": "module",
   "keywords": [
@@ -18,6 +18,10 @@
       "types": "./isolated.d.ts",
       "import": "./bundle/isolated.js",
       "default": "./bundle/isolated.js"
+    },
+    "./usage-probe": {
+      "types": "./dist/usage-probe.d.ts",
+      "import": "./dist/usage-probe.js"
     },
     "./executable-resolution": {
       "types": "./dist/executable-resolution.d.ts",
@@ -195,7 +199,7 @@
     "typescript": "6.0.3"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/index.js --define:CLAUDE_BRIDGE_ISOLATED=false --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/isolated.js --define:CLAUDE_BRIDGE_ISOLATED=true --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/executable-resolution.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/executable-resolution.js && tsc -p tsconfig.executable-resolution.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/index.js --define:CLAUDE_BRIDGE_ISOLATED=false --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=bundle/isolated.js --define:CLAUDE_BRIDGE_ISOLATED=true --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent && esbuild src/executable-resolution.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/executable-resolution.js && esbuild src/usage-probe.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/usage-probe.js && tsc -p tsconfig.executable-resolution.json",
     "prepack": "npm run build",
     "pretest": "npm run build",
     "test": "npm run test:unit",

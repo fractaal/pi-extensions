@@ -109,7 +109,7 @@ If Claude Code accepts a turn but produces no visible output, the bridge returns
 
 ## Plan usage for hosts
 
-On a Claude subscription, the bridge reads Claude Code's plan usage during turns (at most once a minute) and emits `claude-bridge:usage` on Pi's extension event bus: `{ provider: "anthropic-claude-code", observedAt, planType, windows: [{ id: "five_hour" | "weekly", label, windowSeconds, usedPercent, resetAt }] }`. Hosts such as Aria Local Runtime can show it as quota. Claude Code marks the underlying API experimental, so the bridge stops reading for the rest of the process if the call disappears, keeps failing, or returns an unexpected shape. API-key, Bedrock, and Vertex sessions emit nothing.
+On a Claude subscription, the bridge reads Claude Code's plan usage during turns (at most once a minute) and emits `claude-bridge:usage` on Pi's extension event bus: `{ provider: "anthropic-claude-code", observedAt, planType, windows: [{ id: "five_hour" | "weekly", label, windowSeconds, usedPercent, resetAt }] }`. Hosts such as Aria Local Runtime can show it as quota. For steady pacing, hosts can instead poll `createClaudeUsageProbe()` from `@fractaal/pi-claude-bridge/usage-probe` about once a minute: it keeps one idle Claude Code process (no prompt, tools, MCP servers, or user settings, so no model calls) while reads continue and closes it about two minutes after they stop. Claude Code marks the underlying API experimental, so the bridge stops reading for the rest of the process if the call disappears, keeps failing, or returns an unexpected shape. API-key, Bedrock, and Vertex sessions emit nothing.
 
 ## Debugging
 
