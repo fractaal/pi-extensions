@@ -72,15 +72,54 @@ export function parseClaudeUsage(response: unknown, observedAt: string): ClaudeU
 	return { kind: "report", report: { provider: CLAUDE_USAGE_PROVIDER, observedAt, planType, windows } };
 }
 
+export const CLAUDE_USAGE_METHOD = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET";
+export const DEFAULT_USAGE_INTERVAL_MS = 60_000;
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+/** Shared switch-off rules for every way the bridge reads usage. */
+export interface ClaudeUsageGuard {
+	readonly disabled: boolean;
+	/** One guarded read through a live query. Resolves to a report or null; never rejects. */
+	read(query: unknown, now?: () => number): Promise<ClaudeUsageReport | null>;
+}
+
+export function createClaudeUsageGuard(onDisabled?: (reason: string) => void): ClaudeUsageGuard {
+	let disabled = false;
+	let failures = 0;
+	const disable = (reason: string) => {
+		if (disabled) return;
+		disabled = true;
+		onDisabled?.(reason);
+	};
+	return {
+		get disabled() { return disabled; },
+		async read(query, now = Date.now) {
+			if (disabled) return null;
+			const read = (query as Record<string, unknown> | null)?.[CLAUDE_USAGE_METHOD];
+			if (typeof read !== "function") {
+				disable("usage method unavailable");
+				return null;
+			}
+			try {
+				const response = await (read as (opts: { skipBehaviors: boolean }) => Promise<unknown>).call(query, { skipBehaviors: true });
+				failures = 0;
+				const parsed = parseClaudeUsage(response, new Date(now()).toISOString());
+				if (parsed.kind === "invalid") disable("unexpected usage response shape");
+				return parsed.kind === "report" ? parsed.report : null;
+			} catch {
+				failures += 1;
+				if (failures >= MAX_CONSECUTIVE_FAILURES) disable("usage read failed repeatedly");
+				return null;
+			}
+		},
+	};
+}
+
 export interface ClaudeUsageReader {
 	/** Read usage through a live query if a read is due. Never throws or blocks the caller. */
 	maybeRead(query: unknown): void;
 	readonly disabled: boolean;
 }
-
-export const CLAUDE_USAGE_METHOD = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET";
-export const DEFAULT_USAGE_INTERVAL_MS = 60_000;
-const MAX_CONSECUTIVE_FAILURES = 3;
 
 export function createClaudeUsageReader(options: {
 	publish: (report: ClaudeUsageReport) => void;
@@ -90,41 +129,20 @@ export function createClaudeUsageReader(options: {
 }): ClaudeUsageReader {
 	const intervalMs = options.intervalMs ?? DEFAULT_USAGE_INTERVAL_MS;
 	const now = options.now ?? Date.now;
-	let disabled = false;
+	const guard = createClaudeUsageGuard(options.onDisabled);
 	let inFlight = false;
 	let lastReadAt = Number.NEGATIVE_INFINITY;
-	let failures = 0;
-
-	const disable = (reason: string) => {
-		if (disabled) return;
-		disabled = true;
-		options.onDisabled?.(reason);
-	};
 
 	return {
-		get disabled() { return disabled; },
+		get disabled() { return guard.disabled; },
 		maybeRead(query) {
-			if (disabled || inFlight || now() - lastReadAt < intervalMs) return;
-			const read = (query as Record<string, unknown> | null)?.[CLAUDE_USAGE_METHOD];
-			if (typeof read !== "function") {
-				disable("usage method unavailable");
-				return;
-			}
+			if (guard.disabled || inFlight || now() - lastReadAt < intervalMs) return;
 			inFlight = true;
 			lastReadAt = now();
-			void Promise.resolve()
-				.then(() => (read as (opts: { skipBehaviors: boolean }) => Promise<unknown>).call(query, { skipBehaviors: true }))
-				.then((response) => {
-					failures = 0;
-					const parsed = parseClaudeUsage(response, new Date(now()).toISOString());
-					if (parsed.kind === "invalid") disable("unexpected usage response shape");
-					else if (parsed.kind === "report") {
-						try { options.publish(parsed.report); } catch { /* a listener's failure is not an API change */ }
-					}
-				})
-				.catch(() => {
-					failures += 1;
-					if (failures >= MAX_CONSECUTIVE_FAILURES) disable("usage read failed repeatedly");
+			void guard.read(query, now)
+				.then((report) => {
+					if (!report) return;
+					try { options.publish(report); } catch { /* a listener's failure is not an API change */ }
 				})
 				.finally(() => { inFlight = false; });
 		},
