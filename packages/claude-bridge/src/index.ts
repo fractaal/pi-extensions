@@ -496,6 +496,9 @@ interface BridgeRuntimeState {
 	extraUsageHelperInFlight: Promise<string> | null;
 	query: QueryRuntimeState;
 	userDir: string | undefined;
+	// The Pi session's working directory. Pi passes no cwd to providers, and the
+	// host process's cwd (e.g. Symphony's launch directory) is not the workspace.
+	sessionCwd: string | undefined;
 }
 
 function createBridgeRuntimeState(userDir?: string): BridgeRuntimeState {
@@ -506,6 +509,7 @@ function createBridgeRuntimeState(userDir?: string): BridgeRuntimeState {
 		extraUsageHelperInFlight: null,
 		query: createQueryRuntimeState(),
 		userDir,
+		sessionCwd: undefined,
 	};
 }
 
@@ -1843,7 +1847,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	const stream = newAssistantMessageEventStream();
 
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
-	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? bridgeRuntime().sessionCwd ?? process.cwd();
 	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, signalAborted=${options?.signal?.aborted === true}`);
 
 	// --- Abort leftover ---
@@ -2373,6 +2377,8 @@ function registerClaudeBridge(pi: ExtensionAPI, userDir?: string) {
 		pi.on("session_start", (event, ctx) => run(() => {
 			recordProjectTrust(ctx);
 			bridgeRuntime().piUI = ctx.ui;
+			const sessionCwd = typeof (ctx.sessionManager as any)?.getCwd === "function" ? (ctx.sessionManager as any).getCwd() : ctx.cwd;
+			if (typeof sessionCwd === "string" && sessionCwd) bridgeRuntime().sessionCwd = sessionCwd;
 			if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 				clearSession(`session_start:${event.reason}`);
 			}
