@@ -107,6 +107,10 @@ Allowed-warning rate-limit events are filtered before user notification. The bri
 
 If Claude Code accepts a turn but produces no visible output, the bridge returns a retryable assistant error with a backoff hint instead of leaving Pi stuck waiting. Tune the first-output timeout with `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` (bare numbers are seconds; suffixes `ms`, `s`, and `m` are accepted). Default: `90s`; set `0` to disable.
 
+## Plan usage for hosts
+
+On a Claude subscription, the bridge reads Claude Code's plan usage during turns (at most once a minute) and emits `claude-bridge:usage` on Pi's extension event bus: `{ provider: "anthropic-claude-code", observedAt, planType, windows: [{ id: "five_hour" | "weekly", label, windowSeconds, usedPercent, resetAt }] }`. Hosts such as Aria Local Runtime can show it as quota. Claude Code marks the underlying API experimental, so the bridge stops reading for the rest of the process if the call disappears, keeps failing, or returns an unexpected shape. API-key, Bedrock, and Vertex sessions emit nothing.
+
 ## Debugging
 
 Set `CLAUDE_BRIDGE_DEBUG=1` to write bridge logs to `~/.pi/agent/claude-bridge.log` and per-query Claude Code CLI logs under `~/.pi/agent/cc-cli-logs/`.

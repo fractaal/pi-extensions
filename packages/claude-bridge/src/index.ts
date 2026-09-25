@@ -16,6 +16,7 @@ import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.
 import { resolveClaudeCodeExecutable } from "./executable-resolution.js";
 import { FABLE_FALLBACK_MODEL_ID, FABLE_MODEL_ID, buildModels, fallbackModelForPrimaryModel } from "./models.js";
 import { PromptInput } from "./prompt-input.js";
+import { CLAUDE_USAGE_EVENT, createClaudeUsageReader, type ClaudeUsageReader } from "./usage.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -499,10 +500,11 @@ interface BridgeRuntimeState {
 	// The Pi session's working directory. Pi passes no cwd to providers, and the
 	// host process's cwd (e.g. Symphony's launch directory) is not the workspace.
 	sessionCwd: string | undefined;
+	usage: ClaudeUsageReader;
 }
 
 function createBridgeRuntimeState(userDir?: string): BridgeRuntimeState {
-	return {
+	const runtime: BridgeRuntimeState = {
 		sharedSession: null,
 		extensionApi: undefined,
 		piUI: undefined,
@@ -510,7 +512,13 @@ function createBridgeRuntimeState(userDir?: string): BridgeRuntimeState {
 		query: createQueryRuntimeState(),
 		userDir,
 		sessionCwd: undefined,
+		usage: createClaudeUsageReader({
+			// Hosts (e.g. Aria Local Runtime) listen for this to show plan quota.
+			publish: (report) => runtime.extensionApi?.events?.emit?.(CLAUDE_USAGE_EVENT, report),
+			onDisabled: (reason) => debug(`usage: reads disabled (${reason})`),
+		}),
 	};
+	return runtime;
 }
 
 const defaultBridgeRuntime = createBridgeRuntimeState();
@@ -1790,6 +1798,7 @@ async function consumeQuery(
 			case "system":
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
+					bridgeRuntime().usage.maybeRead(sdkQuery);
 				} else if ((message as any).subtype === "model_refusal_fallback") {
 					const originalModel = (message as any).original_model;
 					const fallbackModel = (message as any).fallback_model;
