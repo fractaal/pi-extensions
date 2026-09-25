@@ -9,6 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
+import type { PromptInput } from "./prompt-input.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -78,9 +79,21 @@ function unique(values: Iterable<string | undefined>): string[] {
 	return out;
 }
 
+export function createTurnOutput(model: Model<any>): AssistantMessage {
+	return {
+		role: "assistant", content: [],
+		api: model.api, provider: model.provider, model: model.id,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop", timestamp: Date.now(),
+	};
+}
+
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
+	// Open prompt stream of the active query; steering messages are pushed here.
+	input: PromptInput | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestCursor = 0;
 	pendingToolCalls = new Map<string, PendingToolCall>();
@@ -94,11 +107,6 @@ export class QueryContext {
 	resolvedToolResultIds = new Set<string>();
 	unmatchedToolResultIds = new Set<string>();
 	reportedToolResultMismatch = false;
-	deferredUserMessages: string[] = [];
-	steeringInterruptQuery: unknown | null = null;
-	steeringInterruptStatus: "idle" | "pending" | "acknowledged" | "failed" = "idle";
-	steeringInterruptOutcome: Promise<boolean> | null = null;
-	steeringInterruptAttempts = 0;
 	handledTerminalError = false;
 
 	// Per-turn (reset together)
@@ -113,13 +121,7 @@ export class QueryContext {
 	}
 
 	resetTurnState(model: Model<any>): void {
-		this.turnOutput = {
-			role: "assistant", content: [],
-			api: model.api, provider: model.provider, model: model.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "stop", timestamp: Date.now(),
-		};
+		this.turnOutput = createTurnOutput(model);
 		this.turnStarted = false;
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
@@ -127,28 +129,6 @@ export class QueryContext {
 		// Tool-call tracking is NOT reset here — it persists across the
 		// tool-result delivery callback for the same assistant message. New
 		// assistant messages call resetToolTracking() explicitly.
-	}
-
-	// Prepare for a bridge-internal continuation query that appends to the SAME
-	// pi assistant message. Deliberately NOT resetTurnState: pi never learns the
-	// bridge ran a second query, so it never opens a second assistant message.
-	// Replacing turnOutput here would drop every block the first query produced,
-	// and since pi persists the assistant message from the final `done` payload,
-	// that silently deletes assistant text the user already watched stream in.
-	//
-	// turnStarted is left true on purpose — the pi stream is already open, and a
-	// second `start` event makes consumers treat the continuation as a new
-	// message and discard what they had accumulated.
-	continueTurnState(): void {
-		this.turnSawStreamEvent = false;
-		this.turnSawToolCall = false;
-		this.handledTerminalError = false;
-		if (!this.turnOutput) return;
-		// Seal blocks the previous query left open. The continuation's
-		// content_block indices restart at 0, so an unfinished block would
-		// otherwise capture the continuation's deltas. Completed blocks already
-		// dropped their index at content_block_stop; this covers the rest.
-		for (const block of this.turnOutput.content as Array<{ index?: number }>) delete block.index;
 	}
 
 	resetToolTracking(): void {
@@ -274,39 +254,6 @@ export class QueryContext {
 	}
 }
 
-export async function replayDeferredUserMessages(
-	queryCtx: QueryContext,
-	replay: (messages: readonly string[]) => Promise<void>,
-): Promise<void> {
-	while (queryCtx.deferredUserMessages.length > 0) {
-		const batch = queryCtx.deferredUserMessages.splice(0);
-		try {
-			await replay(batch);
-		} catch (error) {
-			queryCtx.deferredUserMessages.unshift(...batch);
-			throw error;
-		}
-	}
-}
-
-export function formatDeferredUserMessages(messages: readonly string[]): string {
-	if (messages.length === 1) return messages[0];
-	return messages.map((message, index) => `Steering message ${index + 1}:\n${message}`).join("\n\n");
-}
-
-export function prepareFreshUserPrompt(
-	queryCtx: QueryContext,
-	currentPrompt: string,
-): { promptText: string; retainedUserMessages: string[] } {
-	const retainedUserMessages = queryCtx.deferredUserMessages.splice(0);
-	if (retainedUserMessages.length === 0) return { promptText: currentPrompt, retainedUserMessages };
-	const retainedPrompt = formatDeferredUserMessages(retainedUserMessages);
-	return {
-		promptText: currentPrompt ? `${retainedPrompt}\n\nNewer user message:\n${currentPrompt}` : retainedPrompt,
-		retainedUserMessages,
-	};
-}
-
 export function assertInitialQuerySucceeded(queryCtx: QueryContext): void {
 	if (!queryCtx.reportedToolResultMismatch && !queryCtx.handledTerminalError && queryCtx.turnOutput?.stopReason !== "error") return;
 	throw new Error(queryCtx.turnOutput?.errorMessage ?? "Claude bridge initial query failed");
@@ -346,8 +293,6 @@ export function pushContext(): void {
 export function popContext(): void {
 	const runtime = state();
 	if (runtime.stack.length === 0) throw new Error("popContext() called with empty stack");
-	const parent = runtime.stack[runtime.stack.length - 1];
-	parent.deferredUserMessages.push(...runtime.current.deferredUserMessages);
 	runtime.current = runtime.stack.pop()!;
 }
 
