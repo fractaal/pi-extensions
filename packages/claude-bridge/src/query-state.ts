@@ -94,6 +94,9 @@ export class QueryContext {
 	activeQuery: unknown | null = null;
 	// Open prompt stream of the active query; steering messages are pushed here.
 	input: PromptInput | null = null;
+	// Stops tracking the active query. Called before Pi is told a turn ended, so
+	// Pi's next call starts a fresh query instead of reaching this one.
+	release: (() => void) | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestCursor = 0;
 	pendingToolCalls = new Map<string, PendingToolCall>();

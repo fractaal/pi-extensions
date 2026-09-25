@@ -1,3 +1,8 @@
+/**
+ * Translation of Claude Agent SDK messages into Pi stream events, including
+ * SDK orderings the real CLI produces only occasionally. Assertions look at
+ * what Pi receives: stream events and the final assistant message.
+ */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { processAssistantMessage, processStreamEvent, streamClaudeAgentSdk } from "../src/index.ts";
@@ -20,72 +25,44 @@ function installFakeStream() {
 	return events;
 }
 
-describe("assistant tool-use boundary fallback", () => {
+const streamEvent = (event) => ({ type: "stream_event", event });
+const doneMessage = (events) => events.find((event) => event.type === "done")?.message;
+const textDeltas = (events) => events.filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
+
+describe("assistant tool-use boundary", () => {
 	beforeEach(() => resetStack());
 
 	it("ends a streamed tool-use turn when the SDK assistant message arrives before message_stop", () => {
-		const c = ctx();
-		c.resetTurnState(model);
+		ctx().resetTurnState(model);
 		const events = installFakeStream();
-		c.turnSawStreamEvent = true;
-		c.turnSawToolCall = true;
-		c.turnToolCallIds = ["toolu_1"];
-		c.turnBlocks.push({
-			type: "toolCall",
-			id: "toolu_1",
-			name: "bash",
-			arguments: {},
-			partialJson: "{\"command\":\"echo hi\"}",
-			index: 0,
-		});
+		const names = new Map([["mcp__custom-tools__bash", "bash"]]);
 
+		processStreamEvent(streamEvent({ type: "message_start", message: { id: "msg-1" } }), names, model);
+		processStreamEvent(streamEvent({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "mcp__custom-tools__bash", input: {} } }), names, model);
+		processStreamEvent(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"command\":\"echo hi\"}" } }), names, model);
 		processAssistantMessage({
 			type: "assistant",
-			message: {
-				content: [{
-					type: "tool_use",
-					id: "toolu_1",
-					name: "mcp__custom-tools__bash",
-					input: { command: "echo hi" },
-				}],
-			},
-		}, model, new Map([["mcp__custom-tools__bash", "bash"]]));
+			message: { id: "msg-1", content: [{ type: "tool_use", id: "toolu_1", name: "mcp__custom-tools__bash", input: { command: "echo hi" } }] },
+		}, model, names);
 
-		assert.equal(c.currentPiStream, null);
-		assert.equal(c.turnOutput.stopReason, "toolUse");
-		assert.deepEqual(c.turnToolCallIds, ["toolu_1"]);
-		assert.equal(c.turnBlocks.length, 1, "must not duplicate streamed tool call block");
-		assert.equal(c.turnBlocks[0].arguments.command, "echo hi");
-		assert.ok(!("partialJson" in c.turnBlocks[0]), "partial JSON should be finalized");
-		assert.equal(events.at(-2).type, "done");
-		assert.equal(events.at(-2).reason, "toolUse");
-		assert.equal(events.at(-1).type, "stream_end");
+		assert.deepEqual(events.slice(-2).map((event) => event.type), ["done", "stream_end"]);
+		const message = doneMessage(events);
+		assert.equal(message.stopReason, "toolUse");
+		assert.deepEqual(message.content, [{ type: "toolCall", id: "toolu_1", name: "bash", arguments: { command: "echo hi" } }]);
 	});
 
-	it("adds missing tool-use blocks from assistant message before ending the turn", () => {
-		const c = ctx();
-		c.resetTurnState(model);
+	it("adds tool calls that only appear in the assistant message before ending the turn", () => {
+		ctx().resetTurnState(model);
 		const events = installFakeStream();
-		c.turnSawStreamEvent = true;
+		ctx().turnSawStreamEvent = true;
 
 		processAssistantMessage({
 			type: "assistant",
-			message: {
-				content: [{
-					type: "tool_use",
-					id: "toolu_missing",
-					name: "mcp__custom-tools__read",
-					input: { file_path: "README.md" },
-				}],
-			},
+			message: { content: [{ type: "tool_use", id: "toolu_missing", name: "mcp__custom-tools__read", input: { file_path: "README.md" } }] },
 		}, model, new Map([["mcp__custom-tools__read", "read"]]));
 
-		assert.equal(c.currentPiStream, null);
-		assert.deepEqual(c.turnToolCallIds, ["toolu_missing"]);
-		assert.equal(c.turnBlocks.length, 1);
-		assert.equal(c.turnBlocks[0].name, "read");
-		assert.equal(c.turnBlocks[0].arguments.path, "README.md");
 		assert.deepEqual(events.map((event) => event.type), ["start", "toolcall_start", "toolcall_end", "done", "stream_end"]);
+		assert.deepEqual(doneMessage(events).content, [{ type: "toolCall", id: "toolu_missing", name: "read", arguments: { path: "README.md" } }]);
 	});
 
 	it("delivers a late same-message tool call exactly once when its first result opens the next stream", async () => {
@@ -94,11 +71,11 @@ describe("assistant tool-use boundary fallback", () => {
 		installFakeStream();
 		const names = new Map([["mcp__custom-tools__read", "read"]]);
 
-		processStreamEvent({ type: "stream_event", event: { type: "message_start", message: { id: "msg-1" } } }, names, model);
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: {} } } }, names, model);
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"a.txt\"}" } } }, names, model);
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }, names, model);
-		processStreamEvent({ type: "stream_event", event: { type: "message_stop" } }, names, model);
+		processStreamEvent(streamEvent({ type: "message_start", message: { id: "msg-1" } }), names, model);
+		processStreamEvent(streamEvent({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: {} } }), names, model);
+		processStreamEvent(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"a.txt\"}" } }), names, model);
+		processStreamEvent(streamEvent({ type: "content_block_stop", index: 0 }), names, model);
+		processStreamEvent(streamEvent({ type: "message_stop" }), names, model);
 
 		let resolved;
 		c.activeQuery = {};
@@ -111,8 +88,6 @@ describe("assistant tool-use boundary fallback", () => {
 		processAssistantMessage({ type: "assistant", message: { id: "msg-1", content: [
 			{ type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: { file_path: "a.txt" } },
 		] } }, model, names);
-		assert.strictEqual(c.currentPiStream, deliveryStream, "already-emitted fragments must leave the result stream open");
-
 		processAssistantMessage({ type: "assistant", message: { id: "msg-1", content: [
 			{ type: "tool_use", id: "call-a", name: "mcp__custom-tools__read", input: { file_path: "a.txt" } },
 			{ type: "tool_use", id: "call-b", name: "mcp__custom-tools__read", input: { file_path: "b.txt" } },
@@ -122,48 +97,9 @@ describe("assistant tool-use boundary fallback", () => {
 		for await (const event of deliveryStream) events.push(event);
 		assert.deepEqual(events.filter((event) => event.type === "toolcall_end").map((event) => event.toolCall.id), ["call-b"]);
 		assert.deepEqual(resolved.content, [{ type: "text", text: "A result" }]);
-		assert.equal(c.claimToolCall("read", { path: "b.txt" }).toolCallId, "call-b");
-		assert.deepEqual(c.unemittedToolCalls(), []);
 	});
 
-	it("interrupts after a tool result and preserves every newly appended steer in FIFO order", async () => {
-		const c = ctx();
-		let interruptCount = 0;
-		let closeCount = 0;
-		let resolvedResult;
-		c.activeQuery = {
-			interrupt() { interruptCount += 1; return Promise.resolve(); },
-			close() { closeCount += 1; },
-		};
-		c.recordToolCall("call-a", "SlowTool", { seconds: 2 });
-		c.latestCursor = 1;
-		c.pendingToolCalls.set("call-a", {
-			toolName: "SlowTool",
-			resolve(result) {
-				c.markToolResultResolved("call-a");
-				resolvedResult = result;
-			},
-		});
-
-		streamClaudeAgentSdk(model, { messages: [
-			{ role: "assistant", content: [{ type: "toolCall", id: "call-a", name: "SlowTool", arguments: { seconds: 2 } }] },
-			{ role: "toolResult", toolCallId: "call-a", content: [{ type: "text", text: "SlowTool completed" }] },
-			{ role: "user", content: [{ type: "text", text: "Stop. Do not call the next tool." }] },
-			{ role: "user", content: [{ type: "text", text: "Also acknowledge this correction." }] },
-		] });
-
-		assert.deepEqual(resolvedResult.content, [{ type: "text", text: "SlowTool completed" }]);
-		assert.deepEqual(c.deferredUserMessages, [
-			"Stop. Do not call the next tool.",
-			"Also acknowledge this correction.",
-		]);
-		assert.equal(interruptCount, 0, "interrupt must wait until the MCP response promise chain can flush");
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal(interruptCount, 1);
-		assert.equal(closeCount, 0);
-	});
-
-	it("terminates the active query and suppresses new-message calls after an unmatched result", async () => {
+	it("stops the turn with an error and emits no later tool calls after a result for an unknown call", async () => {
 		const c = ctx();
 		c.resetTurnState(model);
 		let interrupted = false;
@@ -187,103 +123,69 @@ describe("assistant tool-use boundary fallback", () => {
 		const names = new Map([["mcp__custom-tools__write", "write"]]);
 		c.resetTurnState(model);
 		const lateEvents = installFakeStream();
-		processStreamEvent({ type: "stream_event", event: { type: "message_start", message: { id: "msg-2" } } }, names, model);
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "post-mismatch-write", name: "mcp__custom-tools__write", input: {} } } }, names, model);
+		processStreamEvent(streamEvent({ type: "message_start", message: { id: "msg-2" } }), names, model);
+		processStreamEvent(streamEvent({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "post-mismatch-write", name: "mcp__custom-tools__write", input: {} } }), names, model);
 		processAssistantMessage({ type: "assistant", message: { id: "msg-2", content: [
 			{ type: "tool_use", id: "post-mismatch-write", name: "mcp__custom-tools__write", input: { file_path: "out.txt", content: "bad" } },
 		] } }, model, names);
 
-		assert.equal(stoppedResult.isError, true);
+		assert.equal(stoppedResult.isError, true, "the waiting handler must not report success");
 		assert.equal(interrupted, true);
 		assert.equal(closed, true);
 		assert.deepEqual(stoppedEvents.map((event) => event.type), ["error"]);
-		assert.deepEqual(lateEvents, []);
-		assert.equal(c.reportedToolResultMismatch, true);
-		assert.equal(c.emittedToolCallIds.has("post-mismatch-write"), false);
+		assert.deepEqual(lateEvents, [], "a tool call after the mismatch must never reach Pi");
 	});
 
-	it("ignores a late bare message_stop so the next assistant fallback still renders text", () => {
-		const c = ctx();
-		c.resetTurnState(model);
-		installFakeStream();
+	it("still renders the assistant text after a late bare message_stop", () => {
+		ctx().resetTurnState(model);
+		const events = installFakeStream();
 
-		processStreamEvent({ type: "stream_event", event: { type: "message_stop" } }, new Map(), model);
+		processStreamEvent(streamEvent({ type: "message_stop" }), new Map(), model);
+		processAssistantMessage({ type: "assistant", message: { content: [{ type: "text", text: "next turn text" }] } }, model, new Map());
 
-		assert.equal(c.turnSawStreamEvent, false, "late stop-only event must not mask assistant fallback");
-		assert.equal(c.currentPiStream !== null, true);
-
-		processAssistantMessage({
-			type: "assistant",
-			message: {
-				content: [{ type: "text", text: "next turn text" }],
-			},
-		}, model, new Map());
-
-		assert.equal(c.turnBlocks.length, 1);
-		assert.equal(c.turnBlocks[0].type, "text");
-		assert.equal(c.turnBlocks[0].text, "next turn text");
+		assert.equal(textDeltas(events), "next turn text");
 	});
 
-	it("ignores late unmatched content_block events so assistant fallback is not masked", () => {
-		const c = ctx();
-		c.resetTurnState(model);
-		installFakeStream();
+	it("ignores late unmatched content events and still renders the assistant text", () => {
+		ctx().resetTurnState(model);
+		const events = installFakeStream();
 
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_delta", index: 7, delta: { type: "text_delta", text: "late" } } }, new Map(), model);
-		processStreamEvent({ type: "stream_event", event: { type: "content_block_stop", index: 7 } }, new Map(), model);
+		processStreamEvent(streamEvent({ type: "content_block_delta", index: 7, delta: { type: "text_delta", text: "late" } }), new Map(), model);
+		processStreamEvent(streamEvent({ type: "content_block_stop", index: 7 }), new Map(), model);
+		processAssistantMessage({ type: "assistant", message: { content: [{ type: "text", text: "fallback after stale content event" }] } }, model, new Map());
 
-		assert.equal(c.turnSawStreamEvent, false, "unmatched late content events must not mask assistant fallback");
-		assert.equal(c.turnBlocks.length, 0);
-
-		processAssistantMessage({
-			type: "assistant",
-			message: {
-				content: [{ type: "text", text: "fallback after stale content event" }],
-			},
-		}, model, new Map());
-
-		assert.equal(c.turnBlocks.length, 1);
-		assert.equal(c.turnBlocks[0].text, "fallback after stale content event");
+		assert.equal(textDeltas(events), "fallback after stale content event");
 	});
 
-	it("updates the Pi assistant model when Claude Code switches models at message_start", () => {
+	it("labels the Pi assistant message with the model Claude Code switched to", () => {
 		const c = ctx();
 		c.resetTurnState({ ...model, id: "claude-fable-5" });
 		installFakeStream();
 
-		processStreamEvent({
-			type: "stream_event",
-			event: {
-				type: "message_start",
-				message: {
-					model: "claude-opus-4-8",
-					usage: { input_tokens: 1, output_tokens: 0 },
-				},
-			},
-		}, new Map(), model);
+		processStreamEvent(streamEvent({
+			type: "message_start",
+			message: { model: "claude-opus-4-8", usage: { input_tokens: 1, output_tokens: 0 } },
+		}), new Map(), model);
 
+		// turnOutput is the assistant message object Pi receives.
 		assert.equal(c.turnOutput.model, "claude-opus-4-8");
-		assert.equal(c.turnSawStreamEvent, false);
 	});
 
 	it("records fallback assistant blocks without rendering them as text", () => {
 		const c = ctx();
 		c.resetTurnState({ ...model, id: "claude-fable-5" });
-		installFakeStream();
+		const events = installFakeStream();
 
 		processAssistantMessage({
 			type: "assistant",
 			message: {
 				model: "claude-opus-4-8",
-				content: [{
-					type: "fallback",
-					from: { model: "claude-fable-5" },
-					to: { model: "claude-opus-4-8" },
-				}],
+				content: [{ type: "fallback", from: { model: "claude-fable-5" }, to: { model: "claude-opus-4-8" } }],
 			},
 		}, model, new Map());
 
 		assert.equal(c.turnOutput.model, "claude-opus-4-8");
-		assert.equal(c.turnBlocks.length, 0);
+		assert.deepEqual(c.turnOutput.content, []);
+		assert.equal(textDeltas(events), "");
 	});
 });

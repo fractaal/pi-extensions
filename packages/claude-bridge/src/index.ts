@@ -1732,9 +1732,12 @@ function failTurnWithClaudeError(errorText: string, cwd: string, bridgeConfig: C
 	c.handledTerminalError = true;
 	c.turnOutput.stopReason = "error";
 	c.turnOutput.errorMessage = errorMessage;
-	c.currentPiStream?.push({ type: "error", reason: "error", error: c.turnOutput });
-	c.currentPiStream?.end();
+	if (!c.reportedToolResultMismatch) bridgeRuntime().sharedSession = null;
+	const piStream = c.currentPiStream;
 	c.currentPiStream = null;
+	c.release?.();
+	piStream?.push({ type: "error", reason: "error", error: c.turnOutput });
+	piStream?.end();
 }
 
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
@@ -1751,12 +1754,14 @@ async function consumeQuery(
 	model: Model<any>,
 	cwd: string,
 	bridgeConfig: Config,
-	wasAborted: () => boolean,
+	isReleased: () => boolean,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 
 	for await (const message of sdkQuery) {
-		if (wasAborted()) break;
+		// Once released (Stop, timeout, a terminal error), the shared context may
+		// already belong to Pi's next turn; nothing more from this query applies.
+		if (isReleased()) break;
 		// A steering message that missed the tool round runs as a follow-up turn
 		// in this same query; keep the input open until none are queued.
 		if (message.type === "result" && !(((message as { queued_turn_count?: number }).queued_turn_count ?? 0) > 0)) input.close();
@@ -1837,7 +1842,7 @@ async function consumeQuery(
 		}
 	}
 
-	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
+	debug(`consumeQuery: for-await loop exited, released=${isReleased()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 
 	return { capturedSessionId };
 }
@@ -1931,10 +1936,11 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			queryCtx.handledTerminalError = true;
 			queryCtx.turnOutput!.stopReason = "error";
 			queryCtx.turnOutput!.errorMessage = errorMessage;
-			queryCtx.currentPiStream?.push({ type: "error", reason: "error", error: queryCtx.turnOutput! });
-			queryCtx.currentPiStream?.end();
-			queryCtx.currentPiStream = null;
 			const activeQuery = queryCtx.activeQuery as Partial<Pick<ReturnType<typeof query>, "interrupt" | "close">>;
+			queryCtx.currentPiStream = null;
+			queryCtx.release?.();
+			stream.push({ type: "error", reason: "error", error: queryCtx.turnOutput! });
+			stream.end();
 			if (typeof activeQuery.interrupt === "function") void activeQuery.interrupt().catch(() => {});
 			if (typeof activeQuery.close === "function") try { activeQuery.close(); } catch {}
 			return stream;
@@ -2099,6 +2105,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	// 4. Start SDK query and claim it for this context
 	let wasAborted = false;
 	let streamIdleTimedOut = false;
+	let released = false;
 	const sdkQuery = query({ prompt: input, options: queryOptions });
 	ctx().activeQuery = sdkQuery;
 
@@ -2148,10 +2155,11 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 						streamIdleTimeoutMs: timeoutMs,
 					});
 				}
-				releaseQuery();
-				abortCtx.currentPiStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
-				abortCtx.currentPiStream?.end();
+				const piStream = abortCtx.currentPiStream;
 				abortCtx.currentPiStream = null;
+				releaseQuery();
+				piStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
+				piStream?.end();
 				requestAbort();
 			}),
 			timeoutMs: streamIdleTimeoutMs,
@@ -2162,12 +2170,27 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		streamIdleWatchdog.refresh();
 	}
 	const onAbort = () => run(() => {
+		if (released) return;
 		wasAborted = true;
 		reportToolResultMismatch(abortCtx, "abort", cwd, { forceRotate: true });
+		// The killed Claude Code process may still write to its session file, so
+		// the next turn rebuilds the copy under a new session id.
+		if (bridgeRuntime().sharedSession) bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, forceRotate: true };
 		for (const pending of abortCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Operation aborted" }] }); }
 		abortCtx.pendingToolCalls.clear();
 		abortCtx.pendingResults.clear();
 		requestAbort();
+		// Stop can flush queued messages into a new Pi run before Claude Code
+		// exits; end this turn and release the query now, not when it exits.
+		const piStream = abortCtx.currentPiStream;
+		abortCtx.currentPiStream = null;
+		releaseQuery();
+		if (piStream && abortCtx.turnOutput) {
+			abortCtx.turnOutput.stopReason = "aborted";
+			abortCtx.turnOutput.errorMessage = "Operation aborted";
+			piStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput });
+			piStream.end();
+		}
 	});
 	if (options?.signal) {
 		if (options.signal.aborted) onAbort();
@@ -2178,7 +2201,6 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	// provider again immediately (a steering message queued during the final
 	// reply, messages flushed by Stop, a retry); that call must start a fresh
 	// query instead of being routed into this finished one as tool results.
-	let released = false;
 	const releaseQuery = () => {
 		if (released) return;
 		released = true;
@@ -2193,33 +2215,18 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		abortCtx.pendingToolCalls.clear();
 		abortCtx.pendingResults.clear();
 		abortCtx.input = null;
+		abortCtx.release = null;
 		// A reentrant context is popped in finally, after its stream is finalized.
 		if (!isReentrant) abortCtx.activeQuery = null;
 	};
+	abortCtx.release = releaseQuery;
 
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, input, customToolNameToPi, model, cwd, bridgeConfig, () => wasAborted)
+	consumeQuery(sdkQuery, input, customToolNameToPi, model, cwd, bridgeConfig, () => released)
 		.then(({ capturedSessionId }) => {
-			debug(`provider: consumeQuery completed, stopReason=${abortCtx.turnOutput?.stopReason}, error=${abortCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
-			if (streamIdleTimedOut) {
-				debug("provider: stream idle timeout already surfaced; skipping normal completion");
-				return;
-			}
-
-			// --- Abort detection in normal completion path ---
-			if (wasAborted || options?.signal?.aborted) {
-				if (bridgeRuntime().sharedSession) bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, forceRotate: true };
-				debug(`provider: abort detected, marked shared session needsRebuild + forceRotate`);
-				releaseQuery();
-				if (abortCtx.turnOutput) {
-					abortCtx.turnOutput.stopReason = "aborted";
-					abortCtx.turnOutput.errorMessage = "Operation aborted";
-				}
-				abortCtx.currentPiStream?.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
-				abortCtx.currentPiStream?.end();
-				abortCtx.currentPiStream = null;
-				return;
-			}
+			debug(`provider: consumeQuery completed, stopReason=${abortCtx.turnOutput?.stopReason}, error=${abortCtx.turnOutput?.errorMessage}, released=${released}`);
+			// Stop, a stream timeout or a terminal error already ended the turn.
+			if (released) return;
 
 			if (abortCtx.reportedToolResultMismatch) {
 				debug(`provider: tool-result mismatch terminated query; preserving rebuild state`);
@@ -2238,26 +2245,19 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			finalizeCurrentStream(abortCtx.turnOutput?.stopReason);
 		})
 		.catch((error) => {
-			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
-			const suppressDuplicateError = abortCtx.handledTerminalError || streamIdleTimedOut;
-			const openedExtraUsage = !suppressDuplicateError && isExtraUsageRequiredMessage(error) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "query error");
-			if ((wasAborted || options?.signal?.aborted) && bridgeRuntime().sharedSession) {
-				bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, forceRotate: true };
-			} else if (!abortCtx.reportedToolResultMismatch) {
-				bridgeRuntime().sharedSession = null;
-			}
+			debug(`provider: query error, model=${model.id}, released=${released}, error=`, error);
+			if (released) return;
+			const openedExtraUsage = isExtraUsageRequiredMessage(error) && launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, "query error");
+			if (!abortCtx.reportedToolResultMismatch) bridgeRuntime().sharedSession = null;
+			const piStream = abortCtx.currentPiStream;
+			abortCtx.currentPiStream = null;
 			releaseQuery();
-			if (suppressDuplicateError) {
-				debug("provider: suppressing duplicate query error after terminal error was already emitted");
-				return;
-			}
 			if (abortCtx.turnOutput) {
-				abortCtx.turnOutput.stopReason = options?.signal?.aborted ? "aborted" : "error";
+				abortCtx.turnOutput.stopReason = "error";
 				abortCtx.turnOutput.errorMessage = `${error instanceof Error ? error.message : String(error)}${openedExtraUsage ? "\n\nOpened Claude Code /extra-usage helper. Complete billing/admin flow in the browser, then retry the prompt." : ""}`;
 			}
-			abortCtx.currentPiStream?.push({ type: "error", reason: (abortCtx.turnOutput?.stopReason ?? "error") as "aborted" | "error", error: abortCtx.turnOutput! });
-			abortCtx.currentPiStream?.end();
-			abortCtx.currentPiStream = null;
+			piStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
+			piStream?.end();
 		})
 		.finally(() => {
 			releaseQuery();
