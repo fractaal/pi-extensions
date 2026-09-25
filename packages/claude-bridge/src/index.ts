@@ -14,7 +14,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { resolveClaudeCodeExecutable } from "./executable-resolution.js";
-import { FABLE_FALLBACK_MODEL_ID, FABLE_MODEL_ID, buildModels, claudeCodeModelArg, fallbackModelForPrimaryModel, stripClaudeCodeModelSuffix } from "./models.js";
+import { FABLE_FALLBACK_MODEL_ID, FABLE_MODEL_ID, buildModels, fallbackModelForPrimaryModel } from "./models.js";
 import { PromptInput } from "./prompt-input.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
@@ -1701,6 +1701,15 @@ function assistantErrorText(message: SDKMessage): string | undefined {
 function failTurnWithClaudeError(errorText: string, cwd: string, bridgeConfig: Config, reason: string): void {
 	const c = ctx();
 	if (!c.turnOutput) return;
+	if (!c.currentPiStream) {
+		// Pi already holds this turn's message (a tool call it is executing).
+		// Leave that message alone: drop the Claude copy and release the query;
+		// Pi's tool results then start a fresh query that continues the turn.
+		debug(`provider: Claude error while Pi runs tools (${reason}): ${errorText.slice(0, 200)}`);
+		if (!c.reportedToolResultMismatch) bridgeRuntime().sharedSession = null;
+		c.release?.();
+		return;
+	}
 	let errorMessage = errorText;
 	if (isExtraUsageRequiredMessage(errorText)) {
 		const openedExtraUsage = launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, reason);
@@ -1778,8 +1787,8 @@ async function consumeQuery(
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
 				} else if ((message as any).subtype === "model_refusal_fallback") {
-					const originalModel = stripClaudeCodeModelSuffix(String((message as any).original_model ?? ""));
-					const fallbackModel = stripClaudeCodeModelSuffix(String((message as any).fallback_model ?? ""));
+					const originalModel = (message as any).original_model;
+					const fallbackModel = (message as any).fallback_model;
 					updateTurnOutputModel(fallbackModel);
 					debug("consumeQuery: model_refusal_fallback", JSON.stringify({ originalModel, fallbackModel }));
 					if (originalModel === FABLE_MODEL_ID && fallbackModel === FABLE_FALLBACK_MODEL_ID) {
@@ -1842,6 +1851,15 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	// (e.g. to follow the "Operation aborted" results of a stopped tool). Starting
 	// Claude here would continue work the user just stopped.
 	if (options?.signal?.aborted) {
+		// A query can outlive the Pi run that started it (a tool batch that ends
+		// the run leaves Claude Code waiting); nothing else would stop it now.
+		const stale = ctx().activeQuery as Partial<Pick<ReturnType<typeof query>, "interrupt" | "close">> | null;
+		if (stale) {
+			if (bridgeRuntime().sharedSession) bridgeRuntime().sharedSession = { ...bridgeRuntime().sharedSession, needsRebuild: true, forceRotate: true };
+			ctx().release?.();
+			if (typeof stale.interrupt === "function") void stale.interrupt().catch(() => {});
+			if (typeof stale.close === "function") try { stale.close(); } catch {}
+		}
 		const aborted = createTurnOutput(model);
 		aborted.stopReason = "aborted";
 		aborted.errorMessage = "Operation aborted";
@@ -2026,10 +2044,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 	if (effort) extraArgs["thinking-display"] = "summarized";
-	const fallbackModelId = fallbackModelForPrimaryModel(model.id);
-	const fallbackModel = fallbackModelId
-		? claudeCodeModelArg(fallbackModelId, MODELS.find((candidate) => candidate.id === fallbackModelId)?.contextWindow)
-		: undefined;
+	const fallbackModel = fallbackModelForPrimaryModel(model.id);
 
 	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
 	// when the user is logged into Anthropic). These are a separate code path from
@@ -2049,7 +2064,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	};
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
-		model: claudeCodeModelArg(model.id, model.contextWindow),
+		model: model.id,
 		env: childEnv,
 		...CLAUDE_BRIDGE_TOOL_ISOLATION,
 		permissionMode: "bypassPermissions",
@@ -2212,11 +2227,18 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			assertInitialQuerySucceeded(abortCtx);
 
 			// --- Capture session ID ---
-			const sessionId = capturedSessionId ?? bridgeRuntime().sharedSession?.sessionId;
+			const previousSession = bridgeRuntime().sharedSession;
+			const sessionId = capturedSessionId ?? previousSession?.sessionId;
 			if (sessionId) {
-				const cursor = Math.max(context.messages.length, abortCtx.latestCursor, bridgeRuntime().sharedSession?.cursor ?? 0);
+				const cursor = Math.max(context.messages.length, abortCtx.latestCursor, previousSession?.cursor ?? 0);
 				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				bridgeRuntime().sharedSession = { sessionId, cursor, cwd };
+				// Keep a rebuild marked during the turn (e.g. a steering message that
+				// could not be pushed exists only in Pi's history).
+				bridgeRuntime().sharedSession = {
+					sessionId, cursor, cwd,
+					...(previousSession?.needsRebuild ? { needsRebuild: true } : {}),
+					...(previousSession?.forceRotate ? { forceRotate: true } : {}),
+				};
 			}
 
 			releaseQuery();

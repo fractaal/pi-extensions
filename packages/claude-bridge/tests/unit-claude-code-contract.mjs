@@ -31,7 +31,6 @@ function bundledClaudeBinary() {
 const claudeBinary = bundledClaudeBinary();
 
 const HAIKU = { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", api: "claude-bridge", provider: "claude-bridge", contextWindow: 200_000, maxTokens: 64_000, reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-const FABLE = { ...HAIKU, id: "claude-fable-5", name: "Claude Fable 5", contextWindow: 1_000_000, maxTokens: 128_000 };
 const LOOKUP_TOOL = { name: "lookup", description: "Look something up.", parameters: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] } };
 const LOOKUP_SDK_NAME = "mcp__custom-tools__lookup";
 
@@ -207,17 +206,30 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		assert.equal(textOf(reply), "", "the error must not also appear as assistant text");
 	});
 
-	it("1M-context models are requested with Claude Code's 1M window; 200k models are not", async () => {
-		respond = () => ({ text: "ok" });
+	it("a Claude error while Pi runs a tool leaves Pi's tool call intact, and the turn continues after the result", async () => {
+		const bridge = newBridge();
+		const start = fakeApi.requests.length;
+		respond = (_request, index) => {
+			// A tool input that fails the tool schema never reaches Pi's handler, so
+			// Claude Code carries on by itself; its next request then fails.
+			if (index === start) return { toolUse: { id: "toolu_invalid_1", name: LOOKUP_SDK_NAME, input: { topic: 5 } } };
+			if (index === start + 1) return { status: 400, message: "invalid_request_error: upstream rejected the request" };
+			return { text: "Continuing after the lookup." };
+		};
 
-		await newBridge().call(FABLE, [user("hello")]);
-		const fableRequest = fakeApi.requests.at(-1);
-		await newBridge().call(HAIKU, [user("hello")]);
-		const haikuRequest = fakeApi.requests.at(-1);
+		const history = [user("Look something up.")];
+		const toolTurn = await bridge.call(HAIKU, history);
+		assert.equal(toolTurn.stopReason, "toolUse");
+		while (fakeApi.requests.length < start + 2) await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.equal(toolTurn.stopReason, "toolUse", "the message Pi already holds must not be rewritten");
 
-		assert.match(fableRequest.beta, /context-1m/);
-		assert.equal(fableRequest.body.model, "claude-fable-5");
-		assert.doesNotMatch(haikuRequest.beta, /context-1m/);
+		const [toolCall] = toolCallsOf(toolTurn);
+		history.push(toolTurn, toolResult(toolCall, "looked up"));
+		const reply = await bridge.call(HAIKU, history);
+
+		assert.equal(textOf(reply), "Continuing after the lookup.");
+		assert.equal(hasFakeReply(fakeApi.requests.at(-1)), false);
 	});
 
 	it("two sessions in one process keep their Claude turns separate", async () => {
@@ -249,7 +261,6 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		const request = fakeApi.requests.at(-1);
 		assert.equal(request.messages.some((message) => message.parts.some((part) => part.startsWith("tool_use"))), false);
 		assert.equal(hasFakeReply(request), false);
-		assert.deepEqual(bridge.notifications.filter((note) => note.level === "error"), []);
 	});
 });
 

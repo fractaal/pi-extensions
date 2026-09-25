@@ -12,22 +12,6 @@ export function fallbackModelForPrimaryModel(modelId: string): string | undefine
 	return modelId === FABLE_MODEL_ID ? FABLE_FALLBACK_MODEL_ID : undefined;
 }
 
-const ONE_MILLION_CONTEXT = 1_000_000;
-const ONE_MILLION_SUFFIX = "[1m]";
-
-// Claude Code enforces its own idea of the context window before calling the
-// API. Models it does not recognise as 1M get 200k and fail locally with
-// "Prompt is too long" at about 177k, while Pi (told 1M) never compacts.
-// The `[1m]` suffix is Claude Code's documented way to declare a 1M window; it
-// strips the suffix and sends the context-1m beta.
-export function claudeCodeModelArg(modelId: string, contextWindow: number | undefined): string {
-	return (contextWindow ?? 0) >= ONE_MILLION_CONTEXT ? `${modelId}${ONE_MILLION_SUFFIX}` : modelId;
-}
-
-export function stripClaudeCodeModelSuffix(modelId: string): string {
-	return modelId.endsWith(ONE_MILLION_SUFFIX) ? modelId.slice(0, -ONE_MILLION_SUFFIX.length) : modelId;
-}
-
 export const MODEL_IDS_IN_ORDER = [
 	FABLE_MODEL_ID,
 	OPUS_5_5_MODEL_ID,

@@ -21,8 +21,8 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 
 ## Context window and errors
 
-- Claude Code enforces its own context window before calling the API and assumes 200k for models it does not know as 1M. Models Pi knows as 1M are passed as `<id>[1m]`, which declares the 1M window and sends the context-1m beta.
-- Claude Code reports account and API failures as a synthetic assistant message with an `error` code. The bridge returns these to Pi as errors, so "Prompt is too long" triggers Pi's overflow compaction and usage limits are not shown as assistant text.
+- Claude Code enforces its own context window before calling the API, from the account's entitlement and its model registry (200k for models it does not know as 1M). The bridge does not override it: forcing `<id>[1m]` can claim a window the account is not entitled to, which fails past 200k as an extra-usage error instead of a recoverable overflow.
+- Claude Code reports account and API failures as a synthetic assistant message with an `error` code. The bridge returns these to Pi as errors, so "Prompt is too long" triggers Pi's overflow compaction and retry, and usage limits are not shown as assistant text. If such an error arrives while Pi is executing the turn's tool calls, the message Pi holds is left intact; the query is released and Pi's tool results continue the turn in a fresh query.
 - `tests/unit-claude-code-contract.mjs` runs the real bundled Claude Code binary against a scripted fake Anthropic API (`tests/lib/fake-anthropic.mjs`) and checks what Pi and the API receive.
 
 ## Executable resolution
