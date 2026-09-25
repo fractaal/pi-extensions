@@ -15,6 +15,8 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 
 ## Claude session copy
 
+- Claude Code runs in the Pi session's working directory, recorded at `session_start`. Pi passes no cwd to providers, and the host process's cwd (for Symphony Desktop, its launch directory) would otherwise become Claude Code's working directory and git context.
+
 - Pi history is canonical. The Claude session file is a copy: resumed while Pi history matches the bridge's cursor, otherwise rebuilt from Pi history.
 - Rebuilds normalize history with Pi's `transformMessages` (from `@earendil-works/pi-ai/api/transform-messages`), the same rules every Pi provider uses: aborted and errored assistant turns are dropped and unanswered tool calls get an error result.
 - When the normalized history does not end in "Claude's last reply, then the new prompt" (an unanswered prompt after Stop or an error, or tool results Pi continues from after compaction), the whole history is written to the copy and Claude Code answers its unanswered end via `CLAUDE_CODE_RESUME_INTERRUPTED_TURN`.

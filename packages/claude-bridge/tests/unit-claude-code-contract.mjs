@@ -58,10 +58,12 @@ function newBridge() {
 	});
 	handlers.get("session_start")?.({ reason: "new" }, { cwd, ui: { notify: (message, level) => notifications.push({ message, level }) } });
 	return {
+		cwd,
 		notifications,
 		/** One provider call, as Pi's agent loop makes it. Resolves with the final assistant message. */
 		async call(model, messages, { signal, onEvent } = {}) {
-			const stream = provider.streamSimple(model, { systemPrompt: "You are a test assistant.", messages, tools: [LOOKUP_TOOL] }, { cwd, signal });
+			// Pi passes no cwd to providers; the session cwd comes from session_start.
+			const stream = provider.streamSimple(model, { systemPrompt: "You are a test assistant.", messages, tools: [LOOKUP_TOOL] }, { signal });
 			let last;
 			for await (const event of stream) {
 				last = event;
@@ -230,6 +232,17 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 
 		assert.equal(textOf(reply), "Continuing after the lookup.");
 		assert.equal(hasFakeReply(fakeApi.requests.at(-1)), false);
+	});
+
+	it("Claude Code runs in the Pi session's working directory, not the host process's", async () => {
+		const bridge = newBridge();
+		respond = () => ({ text: "ok" });
+
+		await bridge.call(HAIKU, [user("Where are you?")]);
+
+		const parts = fakeApi.requests.at(-1).messages.flatMap((message) => message.parts);
+		assert.ok(parts.some((part) => part.includes(`Primary working directory: ${bridge.cwd}`)), "Claude Code must describe the session workspace");
+		assert.equal(parts.some((part) => part.includes(`Primary working directory: ${process.cwd()}\n`)), false);
 	});
 
 	it("two sessions in one process keep their Claude turns separate", async () => {
