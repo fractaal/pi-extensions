@@ -26,7 +26,8 @@ export interface ClaudeUsageReport {
 
 export type ClaudeUsageParse =
 	| { kind: "report"; report: ClaudeUsageReport }
-	// Nothing to show: plan limits do not apply (API key, Bedrock, Vertex) or no window is reported.
+	// Nothing to show: plan limits do not apply (API key, Bedrock, Vertex), Claude
+	// Code has no usage data yet, or no window is reported.
 	| { kind: "not_applicable" }
 	| { kind: "invalid" };
 
@@ -43,6 +44,9 @@ export function parseClaudeUsage(response: unknown, observedAt: string): ClaudeU
 	if (!isRecord(response) || typeof response.rate_limits_available !== "boolean") return { kind: "invalid" };
 	if (!response.rate_limits_available) return { kind: "not_applicable" };
 	const rateLimits = response.rate_limits;
+	// Claude Code reports null until it has usage data (e.g. a process that could
+	// not fetch it and has made no API request yet).
+	if (rateLimits === null) return { kind: "not_applicable" };
 	if (!isRecord(rateLimits)) return { kind: "invalid" };
 
 	const windows: ClaudeUsageWindow[] = [];

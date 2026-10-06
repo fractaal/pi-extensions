@@ -35,8 +35,9 @@ describe("parseClaudeUsage", () => {
 		});
 	});
 
-	it("has nothing to show when plan limits do not apply or no window is reported", () => {
+	it("has nothing to show when plan limits do not apply, Claude Code has no usage data yet, or no window is reported", () => {
 		assert.deepEqual(parseClaudeUsage({ subscription_type: null, rate_limits_available: false, rate_limits: null }, OBSERVED_AT), { kind: "not_applicable" });
+		assert.deepEqual(parseClaudeUsage({ ...maxPlanResponse, rate_limits: null, behaviors: null }, OBSERVED_AT), { kind: "not_applicable" });
 		assert.deepEqual(parseClaudeUsage({ ...maxPlanResponse, rate_limits: { five_hour: null, seven_day: null } }, OBSERVED_AT), { kind: "not_applicable" });
 		assert.deepEqual(parseClaudeUsage({ ...maxPlanResponse, rate_limits: { five_hour: window(null, null) } }, OBSERVED_AT), { kind: "not_applicable" });
 	});
@@ -74,6 +75,19 @@ describe("Claude usage reader", () => {
 
 		assert.equal(published.length, 1);
 		assert.deepEqual(published[0].windows.map((w) => [w.id, w.usedPercent]), [["five_hour", 31], ["weekly", 63]]);
+	});
+
+	it("keeps reading while Claude Code has no usage data yet, and publishes once it has", async () => {
+		const published = [];
+		const reader = createClaudeUsageReader({ publish: (report) => published.push(report), intervalMs: 0 });
+		const query = fakeQuery((call) => (call === 1 ? { ...maxPlanResponse, rate_limits: null, behaviors: null } : maxPlanResponse));
+
+		reader.maybeRead(query);
+		await settle();
+		reader.maybeRead(query);
+		await settle();
+
+		assert.deepEqual(published.map((report) => report.windows.map((w) => w.usedPercent)), [[31, 63]]);
 	});
 
 	it("stops reading for good once the response no longer looks like usage", async () => {
