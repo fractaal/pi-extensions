@@ -184,8 +184,23 @@ function renderGoalSystemPrompt(state: GoalState): string {
 	} else {
 		lines.push("The Goal passed its independent audit. Write one normal final response now and do not call tools.");
 	}
-	if (goal.lastAuditRejection) lines.push(`Latest auditor objection: ${goal.lastAuditRejection.report}`);
+	if (goal.lastAuditRejection) lines.push(`Latest auditor objection (fix it, dispute it in your next completion summary, or ask the user): ${goal.lastAuditRejection.report}`);
 	return lines.join("\n");
+}
+
+function auditRejectionText(report: string): string {
+	return [
+		"Goal completion rejected. The Goal stays active.",
+		"",
+		"<auditor_report>",
+		report,
+		"</auditor_report>",
+		"",
+		"The auditor can be wrong. For each objection:",
+		"- If you agree, fix it.",
+		"- If it misreads the user's request or directives, adds scope they do not support, or rests on wrong facts, leave the work as it is and say why in your next complete_goal summary. The next auditor sees this report and your reasons.",
+		"- If it turns on a decision only the user can make, ask the user and call wait_goal.",
+	].join("\n");
 }
 
 function stateText(state: GoalState): string {
@@ -654,7 +669,7 @@ export default function goalExtension(
 		description: "Request independent audit of the active, blocked, or human-paused Goal. Approval permits one final prose response, then archival.",
 		promptSnippet: "Submit genuinely complete Goal work for independent audit.",
 		promptGuidelines: ["Use complete_goal only when the complete Goal objective is satisfied; the summary is an audit claim, not proof."],
-		parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: GOAL_COMPLETION_SUMMARY_MAX_LENGTH, description: "Concise completion claim and available verification evidence." }) }, { additionalProperties: false }),
+		parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: GOAL_COMPLETION_SUMMARY_MAX_LENGTH, description: "Concise completion claim and available verification evidence. If you dispute an earlier auditor objection, state which one and why." }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, params, signal, _update, ctx) {
 			const target = structuredClone(currentGoal("paused-or-active"));
@@ -678,7 +693,7 @@ export default function goalExtension(
 				const next: Goal = { ...rejectedGoal, status: "active", autoContinue: true, updatedAt: nowIso(), lastAuditRejection: { rejectedAt: nowIso(), report } };
 				persist(next, ctx);
 				publishReceipt({ kind: "goal_completion_rejected", level: auditor.error ? "error" : "warning", ...goalFields(next), reason: auditor.error ?? "Rejected by independent auditor.", auditorReport: report, message: "Goal completion rejected by independent auditor.", tuiMessage: `Goal completion rejected.\n${report}` });
-				return { content: [{ type: "text", text: `Goal completion rejected. Address these objections before retrying:\n\n${report}` }], details: state };
+				return { content: [{ type: "text", text: auditRejectionText(report) }], details: state };
 			}
 			const auditorReport = boundedRequiredText(auditor.output, "Goal completion auditor report", GOAL_COMPLETION_AUDITOR_REPORT_MAX_LENGTH);
 			const { pause: _pause, lastAuditRejection: _lastAuditRejection, ...auditedGoal } = target;

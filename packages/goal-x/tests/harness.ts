@@ -130,6 +130,7 @@ export function createHarness(initialEntries: Array<Record<string, unknown>> = [
 		abort: () => {},
 		onIdle,
 		getContextUsage: () => contextUsage,
+		getSystemPrompt: () => "",
 		modelRegistry: { getAvailable: () => [] },
 	} as unknown as ExtensionContext;
 

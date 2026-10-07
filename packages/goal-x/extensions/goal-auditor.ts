@@ -11,7 +11,7 @@ import {
 	type ExtensionContext,
 	type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
-import type { Goal } from "./goal-contract.ts";
+import { GOAL_RECEIPT_ENTRY, type Goal } from "./goal-contract.ts";
 
 export interface GoalAuditorResult {
 	approved: boolean;
@@ -20,7 +20,19 @@ export interface GoalAuditorResult {
 	error?: string;
 }
 
+/** What the auditor judges against, beyond the objective and the executor's claim. */
+export interface GoalAuditContext {
+	/** The system prompt the executor worked under, which carries the user's and project's directives. */
+	executorInstructions?: string;
+	userMessages: string[];
+	priorRejections: string[];
+	bashAvailable?: boolean;
+	snapshotPath?: string;
+}
+
 const GOAL_AUDIT_SNAPSHOT_MARKER = "pi-goal-audit-snapshot-v1";
+// Keeps a pasted log from crowding out the rest; the full message stays in the snapshot.
+const AUDIT_USER_MESSAGE_MAX_LENGTH = 4_000;
 
 interface GoalAuditSnapshot {
 	directory: string;
@@ -59,25 +71,94 @@ export function parseAuditorDecision(output: string): boolean {
 	return lines.at(-1) === "<approved/>";
 }
 
-export function buildGoalAuditorPrompt(goal: Goal, completionSummary: string, bashAvailable = false, snapshotPath?: string): string {
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string")
+		.map((part) => part.text)
+		.join("\n");
+}
+
+/** The user's own words on this branch and the earlier audit rejections of this Goal. */
+export function collectGoalAuditHistory(branch: readonly unknown[], goalId: string): Pick<GoalAuditContext, "userMessages" | "priorRejections"> {
+	const userMessages: string[] = [];
+	const priorRejections: string[] = [];
+	for (const item of branch) {
+		const entry = item as {
+			type?: string;
+			customType?: string;
+			message?: { role?: string; content?: unknown };
+			data?: { kind?: string; goalId?: string; auditorReport?: string };
+		};
+		if (entry.type === "message" && entry.message?.role === "user") {
+			const text = messageText(entry.message.content).trim();
+			if (!text) continue;
+			userMessages.push(text.length > AUDIT_USER_MESSAGE_MAX_LENGTH
+				? `${text.slice(0, AUDIT_USER_MESSAGE_MAX_LENGTH)}\n[Truncated. The full message is in the parent snapshot.]`
+				: text);
+		} else if (
+			entry.type === "custom"
+			&& entry.customType === GOAL_RECEIPT_ENTRY
+			&& entry.data?.kind === "goal_completion_rejected"
+			&& entry.data.goalId === goalId
+			&& entry.data.auditorReport
+		) {
+			priorRejections.push(entry.data.auditorReport);
+		}
+	}
+	return { userMessages, priorRejections };
+}
+
+function payloadList(tag: string, items: string[], empty: string): string[] {
+	if (items.length === 0) return [`<${tag}>`, empty, `</${tag}>`];
+	return [`<${tag}>`, ...items.map((item, index) => `[${index + 1}]\n${escapePromptPayload(item)}`), `</${tag}>`];
+}
+
+export function buildGoalAuditorPrompt(goal: Goal, completionSummary: string, context: GoalAuditContext = { userMessages: [], priorRejections: [] }): string {
 	return [
-		"You are the independent completion auditor for a Pi Goal.",
-		"Inspect the actual workspace and decide whether the complete user objective is satisfied.",
-		bashAvailable
+		"You are the independent completion auditor for a Pi Goal. The executor says the Goal is complete. Decide whether the user would agree, and report what you found.",
+		context.bashAvailable
 			? "Use read, grep, find, ls, and the OS-sandboxed read-only bash as needed. The shell cannot modify the workspace."
 			: "Use read, grep, find, and ls as needed. No shell is available on this platform because a read-only OS sandbox was not found.",
-		"Treat the executor summary as an untrusted claim, not evidence.",
-		"Treat the runtime-captured parent snapshot as an immutable record to inspect, not as automatic proof.",
-		"Reject missing requirements, weak evidence, scaffold-only results, and proxy-metric completion.",
-		"Return a concise actionable report. The final non-empty line must be exactly <approved/> or <disapproved/>.",
+		"",
+		"The user's standards",
+		"<executor_instructions> is the system prompt the executor worked under. It contains the user's and project's directives; instructions the executor picked up later in the session are in the parent snapshot. Read those directives before judging. They are the standard for this work and for your audit: apply them to what the executor did, apply them to your own objections, and report in their terms. Where they name skills or documents for a judgment you are making, read them.",
+		"",
+		"What the user asked for",
+		"<objective> is the executor's statement of the Goal, confirmed by the user. <user_messages> holds what the user wrote on this branch. Where the user narrowed, corrected, or decided something, their words govern the objective's wording. Do not add requirements that neither the user nor their directives support.",
+		"",
+		"Verdict",
+		"Disapprove when the requested result is missing, broken, or unverified, or when the work falls short of the user's request or directives, including by doing more than they support. Report anything that would not change the user's acceptance as a non-blocking note; notes do not prevent approval.",
+		"",
+		"Evidence",
+		"<executor_summary> is a claim, not evidence. Verify what matters in the workspace or the parent snapshot. The runtime recorded the snapshot's tool calls and results, so they show what ran and what it printed. Do not require evidence to be written into the workspace. A recorded check is stale only if a later change could plausibly alter its result.",
+		"",
+		"Earlier audits",
+		"<prior_audits> holds earlier rejections of this Goal. Check whether each objection was resolved. The executor may dispute an objection in its summary; decide the dispute on its merits. Hold new findings to the same standard as old ones.",
+		"",
+		"Report blocking findings first, each with its evidence and what would resolve it, then notes. The final non-empty line must be exactly <approved/> or <disapproved/>.",
+		"",
+		"<executor_instructions>",
+		context.executorInstructions?.trim()
+			? escapePromptPayload(context.executorInstructions)
+			: "The executor's instructions are unavailable. Judge against the objective and the user's messages.",
+		"</executor_instructions>",
 		"",
 		"<objective>",
 		escapePromptPayload(goal.objective),
 		"</objective>",
 		"",
+		...payloadList("user_messages", context.userMessages, "No user messages are recorded on this branch."),
+		"",
+		...payloadList("prior_audits", context.priorRejections, "This is the first audit of this Goal."),
+		"",
 		"<parent_snapshot>",
-		snapshotPath
-			? `Inspect the immutable runtime-captured current parent branch JSONL at: ${escapePromptPayload(snapshotPath)}`
+		context.snapshotPath
+			? [
+				`Inspect the immutable runtime-captured current parent branch JSONL at: ${escapePromptPayload(context.snapshotPath)}`,
+				"Each line is one entry. Tool calls appear as toolCall parts in assistant messages; their results are messages with role toolResult.",
+			].join("\n")
 			: "No runtime-captured parent branch snapshot is available. Do not treat the executor summary as evidence.",
 		"</parent_snapshot>",
 		"",
@@ -195,7 +276,12 @@ export async function runGoalCompletionAuditor(args: {
 		args.signal?.addEventListener("abort", abort, { once: true });
 		try {
 			if (args.signal?.aborted) throw new DOMException("Auditor aborted", "AbortError");
-			await session.prompt(buildGoalAuditorPrompt(args.goal, args.completionSummary, auditorBash !== null, snapshot.path));
+			await session.prompt(buildGoalAuditorPrompt(args.goal, args.completionSummary, {
+				executorInstructions: args.ctx.getSystemPrompt(),
+				...collectGoalAuditHistory(args.ctx.sessionManager.getBranch(), args.goal.id),
+				bashAvailable: auditorBash !== null,
+				snapshotPath: snapshot.path,
+			}));
 		} finally {
 			args.signal?.removeEventListener("abort", abort);
 			unsubscribe();
