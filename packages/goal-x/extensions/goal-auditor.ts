@@ -66,9 +66,20 @@ function createGoalAuditSnapshot(ctx: ExtensionContext): GoalAuditSnapshot {
 	}
 }
 
+export type GoalReviewVerdict = "approved" | "approved_with_notes" | "disapproved";
+
+/** The verdict marker on the report's final non-empty line, or null when there is none. */
+export function reviewVerdict(output: string): GoalReviewVerdict | null {
+	const last = output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+	if (last === "<approved/>") return "approved";
+	if (last === "<approved_with_notes/>") return "approved_with_notes";
+	if (last === "<disapproved/>") return "disapproved";
+	return null;
+}
+
 export function parseAuditorDecision(output: string): boolean {
-	const lines = output.split("\n").map((line) => line.trim()).filter(Boolean);
-	return lines.at(-1) === "<approved/>";
+	const verdict = reviewVerdict(output);
+	return verdict === "approved" || verdict === "approved_with_notes";
 }
 
 function messageText(content: unknown): string {
@@ -80,7 +91,7 @@ function messageText(content: unknown): string {
 		.join("\n");
 }
 
-/** The user's own words on this branch and the earlier audit rejections of this Goal. */
+/** The user's own words on this branch and the earlier review rejections of this Goal. */
 export function collectGoalAuditHistory(branch: readonly unknown[], goalId: string): Pick<GoalAuditContext, "userMessages" | "priorRejections"> {
 	const userMessages: string[] = [];
 	const priorRejections: string[] = [];
@@ -117,27 +128,31 @@ function payloadList(tag: string, items: string[], empty: string): string[] {
 
 export function buildGoalAuditorPrompt(goal: Goal, completionSummary: string, context: GoalAuditContext = { userMessages: [], priorRejections: [] }): string {
 	return [
-		"You are the independent completion auditor for a Pi Goal. The executor says the Goal is complete. Decide whether the user would agree, and report what you found.",
+		"You are reviewing a Goal on the user's behalf. The executor says the work is done. The user does not have time to check it themselves, so decide what they would decide if they did: would they accept this work?",
 		context.bashAvailable
 			? "Use read, grep, find, ls, and the OS-sandboxed read-only bash as needed. The shell cannot modify the workspace."
 			: "Use read, grep, find, and ls as needed. No shell is available on this platform because a read-only OS sandbox was not found.",
 		"",
-		"The user's standards",
-		"<executor_instructions> is the system prompt the executor worked under. It contains the user's and project's directives; instructions the executor picked up later in the session are in the parent snapshot. Read those directives before judging. They are the standard for this work and for your audit: apply them to what the executor did, apply them to your own objections, and report in their terms. Where they name skills or documents for a judgment you are making, read them.",
+		"How the user judges work",
+		"The user agreed to a result, not a plan. <objective> states that agreement, and <user_messages> holds their own words; where those narrow, correct, or decide something, they govern the objective's wording. Care is deliberately uneven: be exacting about what the user agreed to and about anything that would break or mislead them. Everything the agreement leaves open was the executor's to decide, and differences of method or polish there are not reasons to reject.",
+		"<executor_instructions> is the system prompt the executor worked under, carrying the user's and project's directives; instructions it picked up later in the session are in the parent snapshot. Read them before judging: they tell you what the user values, how much rigor they expect, and when a choice is theirs to make. Apply them to the executor's work and to your own objections, and use their terms. Where they name skills or documents for a judgment you are making, read them.",
 		"",
-		"What the user asked for",
-		"<objective> is the executor's statement of the Goal, confirmed by the user. <user_messages> holds what the user wrote on this branch. Where the user narrowed, corrected, or decided something, their words govern the objective's wording. Do not add requirements that neither the user nor their directives support.",
+		"Grey areas",
+		"Much of this is judgment. When the agreement and directives don't settle a question, decide as the user plausibly would. If you are unsure whether they would object, say so in a note rather than blocking on your guess.",
 		"",
 		"Verdict",
-		"Disapprove when the requested result is missing, broken, or unverified, or when the work falls short of the user's request or directives, including by doing more than they support. A finding blocks only if you can name its consequence for the user: what they lose, risk, or must do if it stays as it is. Each blocking finding asks for more work, so first hold it to whatever standard the directives set for proposing work. Report anything else as a non-blocking note; notes do not prevent approval.",
+		"- Approved: the user would accept the work as it is.",
+		"- Approved with notes: the user would accept it, but should hear something: a decision only they can make that the work did not depend on, a known limitation, or a follow-up worth doing. Notes are things the user would want to read, not polish.",
+		"- Disapproved: the user would not accept it yet. The result they agreed to is missing, broken, or unverified; a constraint they set or a standard in their directives is violated, including doing more than they support; or the work depends on a decision only they can make. Each blocking finding names its consequence for the user and what would resolve it.",
 		"",
 		"Evidence",
-		"<executor_summary> is a claim, not evidence. Verify what matters in the workspace or the parent snapshot. The runtime recorded the snapshot's tool calls and results, so they show what ran and what it printed. Do not require evidence to be written into the workspace. When the user asked for a report, plan, or record, the executor may deliver it in the conversation or its summary; check its content against the evidence rather than requiring a file the user did not ask for. A recorded check is stale only if a later change could plausibly alter its result.",
+		"<executor_summary> tells you where to look; it is not proof. Verify what matters in the workspace or the parent snapshot, where the runtime recorded every tool call and its result, so those show what actually ran and what it printed. Don't require evidence to be written into the workspace, and accept a report or plan the user asked for when it is delivered in the conversation or the summary. A recorded check is stale only if a later change could plausibly alter its result.",
 		"",
-		"Earlier audits",
-		"<prior_audits> holds earlier rejections of this Goal. They are earlier auditors' judgments, not requirements, and they may have been wrong. Check whether the objections that meet the standard above were resolved. Where the executor disputes one, test its reasons against the evidence and the user's words, and uphold the objection only if those reasons fail. Hold new findings to the same standard as old ones.",
+		"Earlier reviews",
+		"<prior_reviews> holds earlier rejections of this Goal. They are earlier judgments, not requirements, and may have been wrong. Recheck the objections that still meet the standard above. When the executor disputes one, test its reasons against the evidence and the user's words, and uphold it only if the reasons fail.",
 		"",
-		"Report blocking findings first, each with its evidence and what would resolve it, then notes. The final non-empty line must be exactly <approved/> or <disapproved/>.",
+		"Report",
+		"Write for the user: plain and brief. Blocking findings first, then notes. The final non-empty line must be exactly <approved/>, <approved_with_notes/>, or <disapproved/>.",
 		"",
 		"<executor_instructions>",
 		context.executorInstructions?.trim()
@@ -151,7 +166,7 @@ export function buildGoalAuditorPrompt(goal: Goal, completionSummary: string, co
 		"",
 		...payloadList("user_messages", context.userMessages, "No user messages are recorded on this branch."),
 		"",
-		...payloadList("prior_audits", context.priorRejections, "This is the first audit of this Goal."),
+		...payloadList("prior_reviews", context.priorRejections, "This is the first review of this Goal."),
 		"",
 		"<parent_snapshot>",
 		context.snapshotPath
@@ -175,7 +190,7 @@ function emptyResourceLoader(): ResourceLoader {
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => "You are a read-only completion auditor. Inspect real evidence and never modify the workspace.",
+		getSystemPrompt: () => "You review finished work on a user's behalf. You can inspect anything you need, but never modify the workspace.",
 		getSystemPromptSource: () => undefined,
 		getAppendSystemPrompt: () => [],
 		getAppendSystemPromptSources: () => [],
@@ -233,7 +248,7 @@ export async function runGoalCompletionAuditor(args: {
 	createSession?: typeof createAgentSession;
 }): Promise<GoalAuditorResult> {
 	const model = args.ctx.model;
-	if (!model) return { approved: false, output: "", error: "No active model is available for the completion auditor." };
+	if (!model) return { approved: false, output: "", error: "No active model is available for the Goal review." };
 	const output: string[] = [];
 	let nestedSession: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 	let snapshot: GoalAuditSnapshot | undefined;
