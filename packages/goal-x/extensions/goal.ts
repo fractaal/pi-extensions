@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { runGoalCompletionAuditor } from "./goal-auditor.ts";
+import { reviewVerdict, runGoalCompletionAuditor } from "./goal-auditor.ts";
 import {
 	GOAL_AUDIT_REJECTION_REPORT_MAX_LENGTH,
 	GOAL_BLOCKER_MAX_LENGTH,
@@ -14,6 +14,7 @@ import {
 	GOAL_CONTINUATION_TEXT,
 	GOAL_OBJECTIVE_MAX_LENGTH,
 	GOAL_PROPOSAL_COMMENT_MAX_LENGTH,
+	GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH,
 	GOAL_PAUSE_REASON_MAX_LENGTH,
 	GOAL_PAUSE_SUGGESTED_ACTION_MAX_LENGTH,
 	GOAL_UNBLOCK_CONDITION_MAX_LENGTH,
@@ -87,6 +88,16 @@ function boundedOptionalText(value: string | undefined, label: string, maxLength
 	if (!trimmed) return undefined;
 	if (trimmed.length > maxLength) throw new Error(`${label} exceeds the ${maxLength}-character producer state bound.`);
 	return trimmed;
+}
+
+const PROPOSED_OBJECTIVE_DESCRIPTION = "What the user agreed to, in their own terms: the result they want, what they expect to see, and any constraints they insisted on. A few short paragraphs they can read at a glance, at most 2,000 characters. Leave out your plan, method, and verification steps; decide those as you work. Markdown is allowed.";
+
+function proposedObjective(value: string): string {
+	const objective = boundedRequiredText(value, "Goal objective", GOAL_OBJECTIVE_MAX_LENGTH);
+	if (objective.length > GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH) {
+		throw new Error(`Goal objective is ${objective.length.toLocaleString("en-US")} characters; the limit is ${GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH.toLocaleString("en-US")}. State only what the user agreed to, in their terms: the result they want and the constraints they insisted on. Move plan, method, and verification detail out of the objective.`);
+	}
+	return objective;
 }
 
 function emptyState(): GoalState {
@@ -166,14 +177,15 @@ function renderGoalSystemPrompt(state: GoalState): string {
 		"<goal_objective>",
 		goal.objective.replace(/<\/?goal_objective>/gi, (tag) => tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;")),
 		"</goal_objective>",
+		"The objective is what the user agreed to. Everything it leaves open is yours to decide as you work, guided by the user's directives and the conversation. Bring a choice to the user only when it would change what they agreed to or is one they would clearly want to make. While you wait for their answer, continue any work that does not depend on it. When you settle something the user might want a say in, such as dropping, keeping, or reinterpreting part of the work, say so plainly in your reply at the time, with your reason.",
 		"\"Continue the Goal.\" messages are automatic reprompts from the Goal extension, not from the user. They never answer your questions, approve anything, or give permission; a decision you put to the user stays pending until the user replies.",
 	];
 	if (goal.status === "active") {
 		lines.push("An active Goal continues by default. Do not stop at a progress report: if any safe, in-scope action can materially advance any part of the objective, take it.");
 		lines.push("When the only remaining progress depends on external state that takes time, call wait_goal instead of polling or stopping.");
-		lines.push("If nothing else can advance the Goal until the user replies to a decision you put to them, call wait_goal.");
+		lines.push("If nothing else can advance the Goal until the user answers, call wait_goal.");
 		lines.push("set_goal_blocked is an exceptional factual claim that autonomous progress is currently impossible. It is not a way to defer work, request review, or hand back an unfinished objective.");
-		lines.push("Call abandon_goal only when the Goal should be abandoned, or complete_goal only after the objective is genuinely complete.");
+		lines.push("Call complete_goal when you believe the user would accept the work as done, or abandon_goal only when the Goal should be abandoned.");
 	} else if (goal.status === "paused" && isGoalBlockedPause(goal.pause)) {
 		lines.push("The Goal is blocked. Do not resume substantive Goal work until resume_goal is called.");
 		lines.push(goal.pause?.reason ?? "No block proof recorded.");
@@ -182,10 +194,41 @@ function renderGoalSystemPrompt(state: GoalState): string {
 		lines.push(`The Goal is paused by the user: ${goal.pause?.reason ?? "no reason recorded"}. Do not resume substantive Goal work until resume_goal is called.`);
 		if (goal.pause?.suggestedAction) lines.push(`Suggested resume action: ${goal.pause.suggestedAction}`);
 	} else {
-		lines.push("The Goal passed its independent audit. Write one normal final response now and do not call tools.");
+		lines.push("The Goal's review approved it. Write one normal final response now and do not call tools.");
 	}
-	if (goal.lastAuditRejection) lines.push(`Latest auditor objection: ${goal.lastAuditRejection.report}`);
+	if (goal.lastAuditRejection) lines.push(`Latest review objection (fix it, dispute it in your next complete_goal summary, or ask the user): ${goal.lastAuditRejection.report}`);
 	return lines.join("\n");
+}
+
+function reviewRejectionText(report: string): string {
+	return [
+		"Goal review: not done yet. The Goal stays active.",
+		"",
+		"<review>",
+		report,
+		"</review>",
+		"",
+		"The reviewer stands in for the user but can be wrong. For each objection:",
+		"- If you agree, fix it.",
+		"- If it misreads what the user agreed to or their directives, asks for work they would not want, or rests on wrong facts, leave the work as it is and say why in your next complete_goal summary. The next review sees this report and your reasons.",
+		"- If it turns on a decision only the user can make, ask the user and call wait_goal.",
+	].join("\n");
+}
+
+function reviewApprovalText(report: string, withNotes: boolean): string {
+	return [
+		`Goal review: approved${withNotes ? " with notes" : ""}.`,
+		"",
+		"<review>",
+		report,
+		"</review>",
+		"",
+		`Write one normal final response now: what was done, what changed, how it was verified, and the final state.${withNotes ? " Pass on the reviewer's notes: they are things the user should know or decide." : ""} End with "Decided without you": one or two plain sentences per judgment call you or the reviewer identified, saying what was decided and why, tied to what the user said, and ask the user to say if any is wrong. Leave that section out if there were none. Do not call tools.`,
+	].join("\n");
+}
+
+function completionMessage(goal: Goal): string {
+	return goal.completion && reviewVerdict(goal.completion.auditorReport) === "approved_with_notes" ? "Goal completed with notes." : "Goal completed.";
 }
 
 function stateText(state: GoalState): string {
@@ -196,7 +239,7 @@ function stateText(state: GoalState): string {
 	const lines = [`Goal ${status}: ${goal.objective}`, `Revision: ${state.revision}`, `Auto-continue: ${goal.autoContinue ? "on" : "off"}`];
 	if (goal.pause) lines.push(`${blocked ? "Block proof" : "Pause reason"}: ${goal.pause.reason}`);
 	if (goal.pause?.suggestedAction) lines.push(`${blocked ? "Unblock condition" : "Suggested action"}: ${goal.pause.suggestedAction}`);
-	if (goal.lastAuditRejection) lines.push(`Latest audit rejection: ${goal.lastAuditRejection.report}`);
+	if (goal.lastAuditRejection) lines.push(`Latest review objection: ${goal.lastAuditRejection.report}`);
 	return lines.join("\n");
 }
 
@@ -506,15 +549,18 @@ export default function goalExtension(
 	pi.registerTool({
 		name: "propose_goal",
 		label: "Propose Goal",
-		description: "Propose one Goal after ordinary conversation has made the objective clear. User confirmation creates and starts it.",
-		promptSnippet: "Propose one confirmed Goal from an aligned objective.",
-		promptGuidelines: ["Use Markdown to create your Goal proposal.", "Use propose_goal only after normal conversation has made a concrete objective clear enough for user confirmation."],
-		parameters: Type.Object({ objective: Type.String({ minLength: 1, maxLength: GOAL_OBJECTIVE_MAX_LENGTH, description: "The complete Goal contract. Markdown is allowed." }) }, { additionalProperties: false }),
+		description: "Propose a Goal once the conversation has settled what the user wants. The user reads and confirms it; confirmation starts autonomous work toward it.",
+		promptSnippet: "Propose a Goal stating what the user agreed to.",
+		promptGuidelines: [
+			"Propose a Goal only after the conversation has settled what the user wants.",
+			"The objective is the user's agreement, not your plan. The user confirms it by reading it, and the reviewer later judges the work against it, so anything you add becomes a requirement they never asked for.",
+		],
+		parameters: Type.Object({ objective: Type.String({ minLength: 1, maxLength: GOAL_OBJECTIVE_MAX_LENGTH, description: PROPOSED_OBJECTIVE_DESCRIPTION }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, params, _signal, _update, ctx) {
 			requireIdleSupport(ctx);
 			if (state.goal) throw new Error("A Goal already exists. Use tweak_goal, set_goal_blocked, abandon_goal, or complete_goal.");
-			const objective = boundedRequiredText(params.objective, "Goal objective", GOAL_OBJECTIVE_MAX_LENGTH);
+			const objective = proposedObjective(params.objective);
 			setProposal("create", objective);
 			let decision: GoalProposalDecision;
 			try {
@@ -535,15 +581,15 @@ export default function goalExtension(
 	pi.registerTool({
 		name: "tweak_goal",
 		label: "Tweak Goal",
-		description: "Propose a complete revised objective for the current Goal. The revision applies only after user confirmation, which also resumes a blocked or paused Goal.",
-		promptSnippet: "Propose a confirmed revision to the current Goal objective.",
-		promptGuidelines: ["Use Markdown to create your Goal proposal.", "Use tweak_goal when user feedback changes the current Goal contract; pass the complete revised objective, not a patch."],
-		parameters: Type.Object({ objective: Type.String({ minLength: 1, maxLength: GOAL_OBJECTIVE_MAX_LENGTH }) }, { additionalProperties: false }),
+		description: "Propose a revised objective when the user changes what they want. It applies only after the user confirms it, which also resumes a blocked or paused Goal.",
+		promptSnippet: "Propose a revision when the user changes what they agreed to.",
+		promptGuidelines: ["Use tweak_goal when the user changes what they agreed to, not when your plan changes. Pass the complete revised objective in the same short form as propose_goal."],
+		parameters: Type.Object({ objective: Type.String({ minLength: 1, maxLength: GOAL_OBJECTIVE_MAX_LENGTH, description: PROPOSED_OBJECTIVE_DESCRIPTION }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, params, _signal, _update, ctx) {
 			requireIdleSupport(ctx);
 			const goal = currentGoal("paused-or-active");
-			const objective = boundedRequiredText(params.objective, "Goal objective", GOAL_OBJECTIVE_MAX_LENGTH);
+			const objective = proposedObjective(params.objective);
 			setProposal("tweak", objective, goal.objective);
 			let decision: GoalProposalDecision;
 			try {
@@ -651,10 +697,10 @@ export default function goalExtension(
 	pi.registerTool({
 		name: "complete_goal",
 		label: "Complete Goal",
-		description: "Request independent audit of the active, blocked, or human-paused Goal. Approval permits one final prose response, then archival.",
-		promptSnippet: "Submit genuinely complete Goal work for independent audit.",
-		promptGuidelines: ["Use complete_goal only when the complete Goal objective is satisfied; the summary is an audit claim, not proof."],
-		parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: GOAL_COMPLETION_SUMMARY_MAX_LENGTH, description: "Concise completion claim and available verification evidence." }) }, { additionalProperties: false }),
+		description: "Ask for the active, blocked, or human-paused Goal to be reviewed as done. A reviewer judges the work on the user's behalf against what they agreed to; approval permits one final response, then the Goal is archived.",
+		promptSnippet: "Submit Goal work for review when the user would accept it as done.",
+		promptGuidelines: ["The reviewer reads the conversation and inspects the workspace. Your complete_goal summary tells it where to look; it is not proof."],
+		parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: GOAL_COMPLETION_SUMMARY_MAX_LENGTH, description: "What you did and how you know it works, pointing to where the evidence is, and the judgment calls you made on the user's behalf. If you dispute an earlier review objection, say which one and why." }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, params, signal, _update, ctx) {
 			const target = structuredClone(currentGoal("paused-or-active"));
@@ -667,18 +713,18 @@ export default function goalExtension(
 					emitAuditState(false, target.id);
 				}
 			})();
-			if (state.goal?.id !== target.id || state.goal.updatedAt !== target.updatedAt) throw new Error("Goal changed while the completion audit was running; audit result discarded.");
+			if (state.goal?.id !== target.id || state.goal.updatedAt !== target.updatedAt) throw new Error("The Goal changed while it was being reviewed; the review result was discarded.");
 			if (!auditor.approved) {
 				const report = boundedRequiredText(
-					auditor.output.trim() || auditor.error || "The independent auditor did not approve completion.",
+					auditor.output.trim() || auditor.error || "The Goal review did not approve completion.",
 					"Goal audit rejection report",
 					GOAL_AUDIT_REJECTION_REPORT_MAX_LENGTH,
 				);
 				const { pause: _pause, ...rejectedGoal } = target;
 				const next: Goal = { ...rejectedGoal, status: "active", autoContinue: true, updatedAt: nowIso(), lastAuditRejection: { rejectedAt: nowIso(), report } };
 				persist(next, ctx);
-				publishReceipt({ kind: "goal_completion_rejected", level: auditor.error ? "error" : "warning", ...goalFields(next), reason: auditor.error ?? "Rejected by independent auditor.", auditorReport: report, message: "Goal completion rejected by independent auditor.", tuiMessage: `Goal completion rejected.\n${report}` });
-				return { content: [{ type: "text", text: `Goal completion rejected. Address these objections before retrying:\n\n${report}` }], details: state };
+				publishReceipt({ kind: "goal_completion_rejected", level: auditor.error ? "error" : "warning", ...goalFields(next), reason: auditor.error ?? "Not approved by the Goal review.", auditorReport: report, message: "Goal review: not done yet.", tuiMessage: `Goal review: not done yet.\n${report}` });
+				return { content: [{ type: "text", text: reviewRejectionText(report) }], details: state };
 			}
 			const auditorReport = boundedRequiredText(auditor.output, "Goal completion auditor report", GOAL_COMPLETION_AUDITOR_REPORT_MAX_LENGTH);
 			const { pause: _pause, lastAuditRejection: _lastAuditRejection, ...auditedGoal } = target;
@@ -691,7 +737,7 @@ export default function goalExtension(
 			};
 			persist(completed, ctx);
 			return {
-				content: [{ type: "text", text: `Goal audit approved.\n\n${auditor.output}\n\nWrite one normal final response now: explain what was completed, what changed or was produced, what was verified, and the final state or relevant next step. Do not call tools.` }],
+				content: [{ type: "text", text: reviewApprovalText(auditorReport, reviewVerdict(auditorReport) === "approved_with_notes") }],
 				details: state,
 			};
 		},
@@ -831,8 +877,8 @@ export default function goalExtension(
 			...goalFields(completed),
 			completionSummary: completed.completion?.summary,
 			auditorReport: completed.completion?.auditorReport,
-			message: "Goal completed.",
-			tuiMessage: "Goal completed.",
+			message: completionMessage(completed),
+			tuiMessage: completionMessage(completed),
 		});
 	});
 

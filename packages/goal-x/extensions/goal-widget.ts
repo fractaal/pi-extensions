@@ -25,7 +25,7 @@ export class GoalWidget implements Component {
 		if (!goal) return [];
 		const blocked = goal.status === "paused" && isGoalBlockedPause(goal.pause);
 		const status = this.isAuditing()
-			? { icon: "◌", label: "auditing", color: "warning" as const }
+			? { icon: "◌", label: "reviewing", color: "warning" as const }
 			: goal.status === "complete"
 				? { icon: "✓", label: "complete", color: "success" as const }
 				: goal.status === "paused"
@@ -41,7 +41,7 @@ export class GoalWidget implements Component {
 			if (goal.pause.suggestedAction) lines.push(`${this.theme.fg("dim", blocked ? "unblock" : "next")} ${this.theme.fg("muted", goal.pause.suggestedAction)}`);
 		}
 		if (goal.lastAuditRejection) {
-			lines.push(`${this.theme.fg("warning", "audit")} ${this.theme.fg("muted", goal.lastAuditRejection.report.replace(/\s+/g, " ").trim())}`);
+			lines.push(`${this.theme.fg("warning", "review")} ${this.theme.fg("muted", goal.lastAuditRejection.report.replace(/\s+/g, " ").trim())}`);
 		}
 		return lines.map((line) => truncateToWidth(line, Math.max(1, width), "…"));
 	}

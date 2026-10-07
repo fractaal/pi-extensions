@@ -40,6 +40,8 @@ export const GOAL_AUDIT_REJECTION_REPORT_MAX_LENGTH = 12_000;
 export const GOAL_COMPLETION_SUMMARY_MAX_LENGTH = 4_000;
 export const GOAL_COMPLETION_AUDITOR_REPORT_MAX_LENGTH = 12_000;
 export const GOAL_PROPOSAL_COMMENT_MAX_LENGTH = 4_000;
+// A proposed objective must stay readable at a glance; stored state keeps the larger bound so older Goals still load.
+export const GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH = 2_000;
 
 export const GoalUsageSchema = Type.Object({
 	tokensUsed: Type.Number({ minimum: 0 }),

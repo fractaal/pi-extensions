@@ -13,7 +13,7 @@ import {
 	GOAL_COMPLETION_SUMMARY_MAX_LENGTH,
 	GOAL_CONTINUATION_MESSAGE,
 	GOAL_CONTINUATION_TEXT,
-	GOAL_OBJECTIVE_MAX_LENGTH,
+	GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH,
 	GOAL_UNBLOCK_CONDITION_MAX_LENGTH,
 	GOAL_WAIT_MIN_SECONDS,
 	GOAL_WAIT_MAX_SECONDS,
@@ -360,7 +360,9 @@ test("Goal semantic state is byte-stable in the system prompt and never floated 
 	assert.match(firstPrompt, /An active Goal continues by default/);
 	assert.match(firstPrompt, /set_goal_blocked is an exceptional factual claim/);
 	assert.match(firstPrompt, /"Continue the Goal\." messages are automatic reprompts from the Goal extension, not from the user\. They never answer your questions, approve anything, or give permission/);
-	assert.match(firstPrompt, /If nothing else can advance the Goal until the user replies to a decision you put to them, call wait_goal\./);
+	assert.match(firstPrompt, /The objective is what the user agreed to\. Everything it leaves open is yours to decide/);
+	assert.match(firstPrompt, /If nothing else can advance the Goal until the user answers, call wait_goal\./);
+	assert.match(firstPrompt, /When you settle something the user might want a say in/);
 	assert.doesNotMatch(firstPrompt, /pause_goal|call pause|revision=|goalId=|tokensUsed|activeSeconds|updatedAt/);
 
 	const revisionBeforeAccounting = latestGoalState(harness.entries).revision;
@@ -721,6 +723,34 @@ test("auditor approval allows final prose, blocks tools, then archives once at s
 	assert.equal(completed.length, 1, "provider success or failure settles one durable completion receipt");
 });
 
+test("an overlong Goal proposal is refused before the user is asked, with what to cut", async () => {
+	const harness = harnessWithGoal(async () => ({ approved: false, output: "not used\n<disapproved/>" }));
+	await harness.run("session_start", { reason: "startup" });
+	harness.confirmations.push(true);
+	await assert.rejects(
+		() => executeTool(harness, "propose_goal", { objective: "x".repeat(2_001) }),
+		/2,001 characters; the limit is 2,000\. State only what the user agreed to/,
+	);
+	assert.deepEqual(harness.confirmationRequests, [], "the user is never shown an overlong proposal");
+	assert.equal(harness.confirmations.length, 1, "no confirmation was consumed");
+	assert.equal(harness.entries.some((entry) => entry.customType === "pi-goal-state-v1"), false, "no Goal starts");
+});
+
+test("approval with notes completes the Goal and announces that it has notes", async () => {
+	const harness = harnessWithGoal(async () => ({ approved: true, output: "Done.\nNote: decide whether the inherited test may stay red.\n<approved_with_notes/>" }));
+	await harness.run("session_start", { reason: "startup" });
+	harness.confirmations.push(true);
+	await executeTool(harness, "propose_goal", { objective: "Deliver a verified feature" });
+	const result = await executeTool(harness, "complete_goal", { summary: "Implemented and tested" });
+	assert.match(result.content?.[0]?.text ?? "", /decide whether the inherited test may stay red/);
+	assert.equal(latestGoalState(harness.entries).goal?.status, "complete");
+	await harness.run("agent_settled", {});
+	const completed = harness.events.emitted
+		.filter((event) => event.channel === GOAL_TRANSCRIPT_EVENT && (event.data as { kind?: string }).kind === "goal_completed")
+		.map((event) => (event.data as { tuiMessage?: string }).tuiMessage);
+	assert.deepEqual(completed, ["Goal completed with notes."]);
+});
+
 test("Goal mutations accept exact bounds and reject max+1 atomically", async () => {
 	let auditCalls = 0;
 	let auditResult = { approved: false, output: "not used\n<disapproved/>" };
@@ -730,8 +760,8 @@ test("Goal mutations accept exact bounds and reject max+1 atomically", async () 
 	});
 	await harness.run("session_start", { reason: "startup" });
 	harness.confirmations.push(true);
-	await executeTool(harness, "propose_goal", { objective: "x".repeat(GOAL_OBJECTIVE_MAX_LENGTH) });
-	assert.equal(latestGoalState(harness.entries).goal?.objective.length, GOAL_OBJECTIVE_MAX_LENGTH);
+	await executeTool(harness, "propose_goal", { objective: "x".repeat(GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH) });
+	assert.equal(latestGoalState(harness.entries).goal?.objective.length, GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH);
 
 	async function rejectsAtomically(action: () => Promise<unknown>, pattern: RegExp, expectedAuditEvents = 0): Promise<void> {
 		const beforeEntries = harness.entries.length;
@@ -746,8 +776,8 @@ test("Goal mutations accept exact bounds and reject max+1 atomically", async () 
 	}
 
 	await rejectsAtomically(
-		() => executeTool(harness, "tweak_goal", { objective: "x".repeat(GOAL_OBJECTIVE_MAX_LENGTH + 1) }),
-		/objective exceeds/i,
+		() => executeTool(harness, "tweak_goal", { objective: "x".repeat(GOAL_PROPOSED_OBJECTIVE_MAX_LENGTH + 1) }),
+		/the limit is 2,000/i,
 	);
 	for (const [field, maxLength] of [
 		["blocker", GOAL_BLOCKER_MAX_LENGTH],
