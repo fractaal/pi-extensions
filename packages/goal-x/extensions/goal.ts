@@ -177,7 +177,7 @@ function renderGoalSystemPrompt(state: GoalState): string {
 		"<goal_objective>",
 		goal.objective.replace(/<\/?goal_objective>/gi, (tag) => tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;")),
 		"</goal_objective>",
-		"The objective is what the user agreed to. Everything it leaves open is yours to decide as you work, guided by the user's directives and the conversation. Bring a choice to the user only when it would change what they agreed to or is one they would clearly want to make. While you wait for their answer, continue any work that does not depend on it.",
+		"The objective is what the user agreed to. Everything it leaves open is yours to decide as you work, guided by the user's directives and the conversation. Bring a choice to the user only when it would change what they agreed to or is one they would clearly want to make. While you wait for their answer, continue any work that does not depend on it. When you settle something the user might want a say in, such as dropping, keeping, or reinterpreting part of the work, say so plainly in your reply at the time, with your reason.",
 		"\"Continue the Goal.\" messages are automatic reprompts from the Goal extension, not from the user. They never answer your questions, approve anything, or give permission; a decision you put to the user stays pending until the user replies.",
 	];
 	if (goal.status === "active") {
@@ -223,7 +223,7 @@ function reviewApprovalText(report: string, withNotes: boolean): string {
 		report,
 		"</review>",
 		"",
-		`Write one normal final response now: what was done, what changed, how it was verified, and the final state.${withNotes ? " Pass on the reviewer's notes: they are things the user should know or decide." : ""} Do not call tools.`,
+		`Write one normal final response now: what was done, what changed, how it was verified, and the final state.${withNotes ? " Pass on the reviewer's notes: they are things the user should know or decide." : ""} End with "Decided without you": one or two plain sentences per judgment call you or the reviewer identified, saying what was decided and why, tied to what the user said, and ask the user to say if any is wrong. Leave that section out if there were none. Do not call tools.`,
 	].join("\n");
 }
 
@@ -700,7 +700,7 @@ export default function goalExtension(
 		description: "Ask for the active, blocked, or human-paused Goal to be reviewed as done. A reviewer judges the work on the user's behalf against what they agreed to; approval permits one final response, then the Goal is archived.",
 		promptSnippet: "Submit Goal work for review when the user would accept it as done.",
 		promptGuidelines: ["The reviewer reads the conversation and inspects the workspace. Your complete_goal summary tells it where to look; it is not proof."],
-		parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: GOAL_COMPLETION_SUMMARY_MAX_LENGTH, description: "What you did and how you know it works, pointing to where the evidence is. If you dispute an earlier review objection, say which one and why." }) }, { additionalProperties: false }),
+		parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: GOAL_COMPLETION_SUMMARY_MAX_LENGTH, description: "What you did and how you know it works, pointing to where the evidence is, and the judgment calls you made on the user's behalf. If you dispute an earlier review objection, say which one and why." }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, params, signal, _update, ctx) {
 			const target = structuredClone(currentGoal("paused-or-active"));
