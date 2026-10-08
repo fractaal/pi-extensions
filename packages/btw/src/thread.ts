@@ -69,7 +69,7 @@ export class BtwThread {
 		try {
 			// Tools stay declared (they are part of the cached prefix); calls are answered
 			// with a "blocked" result and the model is asked again until it replies in text.
-			// Esc aborts a model that keeps trying.
+			// Ctrl+C in the panel aborts a model that keeps trying.
 			for (;;) {
 				const reply = await this.stream(controller.signal);
 				this.messages.push(reply);

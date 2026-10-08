@@ -1,6 +1,6 @@
 import { type Api, type AssistantMessage, type Context, createAssistantMessageEventStream, type Message, type Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { handoffText } from "../src/branch.ts";
+import { asSent, handoffText, mainContext } from "../src/branch.ts";
 import { BtwThread } from "../src/thread.ts";
 
 const model = { id: "test-model", provider: "test", api: "test-api", reasoning: false } as unknown as Model<Api>;
@@ -125,5 +125,37 @@ describe("/btw handoff", () => {
 		expect(text).toMatch(/^<system>The user branched this conversation/);
 		expect(text).toContain("USER: Could the cache be stale?\n\nASSISTANT: Yes, that is plausible.\n(tried to call read; blocked in /btw)");
 		expect(text).not.toContain("system-reminder");
+	});
+});
+
+describe("main context at the branch point", () => {
+	const bash = { name: "bash", description: "Run a command", parameters: { type: "object", properties: {} } };
+	const system = { role: "system", content: "Base prompt.", toolsAdded: [bash], timestamp: 1 } as Message;
+	const ask = { role: "user", content: [{ type: "text", text: "Run ls" }], timestamp: 2 } as Message;
+	const call = assistant([{ type: "toolCall", id: "c1", name: "bash", arguments: {} }], "toolUse");
+	const result = { role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "a.txt" }], isError: false, timestamp: 4 } as Message;
+	const reply = assistant([{ type: "text", text: "One file." }]);
+
+	it("sends a prompt an extension forced for the run, as Pi does, with the same tools", () => {
+		expect(asSent([system, ask], "Base prompt.\n\nMemory section.")).toEqual([
+			{ role: "system", content: "Base prompt.\n\nMemory section.", toolsAdded: [bash], timestamp: 1 },
+			ask,
+		]);
+	});
+
+	it("leaves a transcript whose prompt was not forced as it is", () => {
+		expect(asSent([system, ask], "Base prompt.")).toEqual([system, ask]);
+	});
+
+	it("extends the last request with what the session gained since", () => {
+		const lastRequest = [{ ...system, content: "Forced." } as Message, ask];
+		expect(mainContext(lastRequest, [system, ask, call, result, reply])).toEqual([...lastRequest, call, result, reply]);
+	});
+
+	it("falls back to the session history when it no longer extends the last request", () => {
+		const lastRequest = [system, ask, call, result, reply];
+		const compacted = [system, { role: "compactionSummary", summary: "Ran ls.", tokensBefore: 10, timestamp: 5 } as never];
+		expect(mainContext(lastRequest, compacted)).toEqual(compacted);
+		expect(mainContext(undefined, [system, ask])).toEqual([system, ask]);
 	});
 });
