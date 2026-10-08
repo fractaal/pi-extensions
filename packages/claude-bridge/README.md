@@ -14,6 +14,7 @@ Maintained from [`@vanillagreen/pi-claude-bridge`](https://github.com/vanillagre
 - Tool-use turns block until Pi-delivered tool results reach Claude Code, including persistent subagent panes.
 - Session continuity across normal turns, `/compact`, tree navigation, and abort recovery.
 - Steering: a message sent while a tool runs reaches Claude in the same turn, right after the tool result.
+- Requests with a session id other than the Pi session's own (an extension's side conversation, such as `/btw`) run in their own Claude Code session, alongside the main turn without touching it.
 - When a session outgrows the context window Claude Code allows for your account, Pi compacts and continues the turn automatically.
 - Thinking-level forwarding with summarized Opus thinking display.
 - Optional Claude effort overrides (`xhigh` → `max` for Opus 4.8).

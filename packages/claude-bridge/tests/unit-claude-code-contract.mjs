@@ -82,7 +82,8 @@ let workDir;
 let fakeApi;
 let respond;
 
-function newBridge(env) {
+/** `sessionId` is the Pi session's id, as Pi reports it at session start and sends with its own requests. */
+function newBridge(env, { sessionId } = {}) {
 	const handlers = new Map();
 	const notifications = [];
 	const registry = new Map(); // name -> { tool, exposure }
@@ -100,7 +101,8 @@ function newBridge(env) {
 		setActiveTools(names) { active = [...new Set(names)].filter((name) => registry.has(name) && registry.get(name).exposure !== "hidden"); },
 	};
 	createClaudeBridgeExtension({ userDir: join(workDir, "user"), env })(pi);
-	handlers.get("session_start")?.({ reason: "new" }, { cwd, ui: { notify: (message, level) => notifications.push({ message, level }) } });
+	const sessionManager = sessionId ? { getSessionId: () => sessionId, getCwd: () => cwd } : undefined;
+	handlers.get("session_start")?.({ reason: "new" }, { cwd, sessionManager, ui: { notify: (message, level) => notifications.push({ message, level }) } });
 	let declared; // tool names the transcript declares
 	let initial; // tool names the leading system message declares
 	const systemUpdates = []; // { after, message }: mid-transcript system messages, kept where Pi put them
@@ -123,7 +125,7 @@ function newBridge(env) {
 		 * `tools` sets the active tools on the first call and whenever given; `registered` adds tools
 		 * with another exposure ({ ...tool, exposure }); `systemPrompt` is Pi's prompt for this call.
 		 */
-		async call(model, messages, { signal, onEvent, tools, registered = [], systemPrompt = "You are a test assistant." } = {}) {
+		async call(model, messages, { signal, sessionId, onEvent, tools, registered = [], systemPrompt = "You are a test assistant." } = {}) {
 			if (tools || !declared) {
 				const direct = tools ?? [LOOKUP_TOOL];
 				for (const tool of direct) registry.set(tool.name, { tool, exposure: "direct" });
@@ -147,7 +149,7 @@ function newBridge(env) {
 			});
 			for (const update of systemUpdates) if (update.after >= messages.length) transcript.push(update.message);
 			// Pi passes no cwd to providers; the session cwd comes from session_start.
-			const stream = provider.streamSimple(model, { messages: transcript }, { signal });
+			const stream = provider.streamSimple(model, { messages: transcript }, { signal, sessionId });
 			let last;
 			for await (const event of stream) {
 				last = event;
@@ -205,6 +207,35 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		assert.ok(last.parts.some((part) => part.startsWith("tool_result:blue")));
 		assert.ok(last.parts.some((part) => part.includes("Also, what is 17 * 3?")));
 		assert.equal(requests.some(hasFakeReply), false);
+	});
+
+	it("a request for another session id runs as its own conversation alongside the main turn", async () => {
+		const bridge = newBridge(undefined, { sessionId: "pi-main" });
+		const start = fakeApi.requests.length;
+		const isSide = (request) => request.messages.some((message) => message.parts.some((part) => part.includes("By the way")));
+		respond = (request, index) => isSide(request)
+			? { text: "Side answer.", delayMs: 1500 }
+			: index === start
+				? { toolUse: { id: "toolu_side_1", name: LOOKUP_SDK_NAME, input: { topic: "sky" } } }
+				: { text: "The sky is blue." };
+
+		const history = [user("Look up the colour of the sky.")];
+		const toolTurn = await bridge.call(HAIKU, history, { sessionId: "pi-main" });
+		const [toolCall] = toolCallsOf(toolTurn);
+
+		// While Claude Code waits on that tool, an extension asks a side question over the same transcript,
+		// and the tool finishes while the side answer is still streaming.
+		const side = [...history, toolTurn, toolResult(toolCall, "still running"), user("By the way, why is it slow?")];
+		const sideReply = bridge.call(HAIKU, side, { sessionId: "pi-main:side" });
+		while (!fakeApi.requests.slice(start).some(isSide)) await new Promise((resolve) => setTimeout(resolve, 20));
+		history.push(toolTurn, toolResult(toolCall, "blue"));
+		const reply = await bridge.call(HAIKU, history, { sessionId: "pi-main" });
+
+		assert.equal(reply.stopReason, "stop");
+		assert.equal(textOf(reply), "The sky is blue.");
+		assert.equal(textOf(await sideReply), "Side answer.");
+		const mainRequests = fakeApi.requests.slice(start).filter((request) => !isSide(request));
+		assert.ok(mainRequests.at(-1).messages.at(-1).parts.some((part) => part.startsWith("tool_result:blue")));
 	});
 
 	it("each turn reaches Pi with the output tokens Claude generated for it, including a tool-call turn", async () => {

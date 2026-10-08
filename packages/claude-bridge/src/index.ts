@@ -2496,8 +2496,26 @@ export interface ClaudeBridgeExtensionOptions {
 function registerClaudeBridge(pi: ExtensionAPI, options: ClaudeBridgeExtensionOptions) {
 	const runtime = createBridgeRuntimeState(options.userDir, options.env);
 	const run: RunInBridgeRuntime = callback => runWithBridgeRuntime(runtime, callback);
-	const boundStream = ((model: Model<any>, context: Context, options?: SimpleStreamOptions) =>
-		run(() => streamClaudeAgentSdk(model, context, options))) as typeof streamClaudeAgentSdk;
+	// Requests from the Pi session itself carry its id. A request with another id is a
+	// separate conversation (an extension's side thread, a nested session) and gets its
+	// own Claude Code session, so it cannot steer or rebuild the main one.
+	let mainSessionId: string | undefined;
+	const otherRuntimes = new Map<string, BridgeRuntimeState>();
+	const runtimeFor = (sessionId: string | undefined): BridgeRuntimeState => {
+		if (!sessionId || !mainSessionId || sessionId === mainSessionId) return runtime;
+		let other = otherRuntimes.get(sessionId);
+		if (!other) {
+			other = createBridgeRuntimeState(options.userDir, options.env);
+			other.extensionApi = runtime.extensionApi;
+			other.piUI = runtime.piUI;
+			other.sessionCwd = runtime.sessionCwd;
+			otherRuntimes.set(sessionId, other);
+			debug(`provider: separate Claude Code session for request session ${sessionId.slice(0, 16)}`);
+		}
+		return other;
+	};
+	const boundStream = ((model: Model<any>, context: Context, streamOptions?: SimpleStreamOptions) =>
+		runWithBridgeRuntime(runtimeFor(streamOptions?.sessionId), () => streamClaudeAgentSdk(model, context, streamOptions))) as typeof streamClaudeAgentSdk;
 
 	return run(() => {
 		bridgeRuntime().extensionApi = pi;
@@ -2509,12 +2527,17 @@ function registerClaudeBridge(pi: ExtensionAPI, options: ClaudeBridgeExtensionOp
 			return;
 		}
 
-		const closeActiveQueries = (event: string) => {
-			for (const activeQuery of bridgeRuntime().activeQueries) {
+		const closeActiveQueries = (event: string, target = bridgeRuntime()) => {
+			for (const activeQuery of target.activeQueries) {
 				debug(`${event}: closing active Claude Code query`);
 				void activeQuery.interrupt().catch(() => {});
 				try { activeQuery.close(); } catch {}
 			}
+		};
+		// The other conversations belonged to the session being left.
+		const dropOtherRuntimes = (event: string) => {
+			for (const other of otherRuntimes.values()) closeActiveQueries(event, other);
+			otherRuntimes.clear();
 		};
 		const clearSession = (event: string) => {
 			debug(`${event}: clearing session ${bridgeRuntime().sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
@@ -2532,6 +2555,9 @@ function registerClaudeBridge(pi: ExtensionAPI, options: ClaudeBridgeExtensionOp
 			bridgeRuntime().piUI = ctx.ui;
 			const sessionCwd = typeof (ctx.sessionManager as any)?.getCwd === "function" ? (ctx.sessionManager as any).getCwd() : ctx.cwd;
 			if (typeof sessionCwd === "string" && sessionCwd) bridgeRuntime().sessionCwd = sessionCwd;
+			const sessionId = (ctx.sessionManager as any)?.getSessionId?.();
+			mainSessionId = typeof sessionId === "string" && sessionId ? sessionId : undefined;
+			dropOtherRuntimes(`session_start:${event.reason}`);
 			if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 				clearSession(`session_start:${event.reason}`);
 			}
@@ -2540,6 +2566,7 @@ function registerClaudeBridge(pi: ExtensionAPI, options: ClaudeBridgeExtensionOp
 		}));
 		pi.on("session_shutdown", () => run(() => {
 			closeActiveQueries("session_shutdown");
+			dropOtherRuntimes("session_shutdown");
 			clearSession("session_shutdown");
 		}));
 		pi.on("message_end", (event, ctx) => run(() => {
