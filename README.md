@@ -15,6 +15,7 @@ fractaal's Pi extension monorepo — agentic QoL extensions published to npm und
 | [`@fractaal/pi-goal-x`](packages/goal-x) | Branch-local Goals with confirmed proposals, autonomous continuation, and independent completion audit. |
 | [`@fractaal/pi-todo`](packages/todo) | Revisioned branch-local Todo plans with omission protection and replay. |
 | [`@fractaal/pi-context-window`](packages/context-window) | Per-session and per-model context-window budgets. |
+| [`@fractaal/pi-btw`](packages/btw) | `/btw` side conversations branched from the current context, with tool calls blocked and an option to send the discussion back. |
 
 ## Consumption
 
