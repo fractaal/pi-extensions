@@ -1,0 +1,46 @@
+{
+  "name": "@fractaal/pi-btw",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "/btw side conversations for Pi: branch the current context into a tool-blocked panel and optionally send the discussion back.",
+  "keywords": ["pi-package", "pi-extension", "btw", "side-conversation"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/btw"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/btw#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src", "README.md", "LICENSE"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.86.4",
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.86.4",
+    "@earendil-works/pi-tui": "npm:@fractaal/pi-tui@0.86.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.86.4",
+    "@earendil-works/pi-coding-agent": ">=0.86.4",
+    "@earendil-works/pi-tui": ">=0.86.4"
+  }
+}

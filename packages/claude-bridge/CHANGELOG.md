@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.0
+
+- A request whose session id differs from the Pi session's own (an extension's side conversation such as `/btw`, or a nested session) runs in its own Claude Code session. Before, it shared the main session's Claude Code query: while the main turn waited on a tool, the side request was taken as that turn's tool results and steering, and the main turn's reply could arrive in the side request's stream.
+
 ## 2.0.0
 
 - Requires the Pi 1.x provider API as shipped by the fractaal fork 0.86 or newer (peer range `>=0.86.0`). Bridge 1.12.x remains the line for Pi 0.85 and older.
