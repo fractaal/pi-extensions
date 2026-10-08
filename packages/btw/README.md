@@ -30,6 +30,6 @@ Side conversations exist only in memory. They are not written to the session fil
 
 **Send back** (Ctrl+S) adds the discussion to the main session as one message. It is framed as context the user brought back from an ephemeral branch and holds the side conversation from the branch point to the end. If the main agent is working, the message steers it after the current tool batch. If it is idle, the message starts a turn.
 
-Each side conversation has its own session id (`<main id>:btw:<random>`). Providers that keep per-conversation state, such as Claude Bridge, therefore run it separately from the main session.
+Each side conversation has its own session id (`<main id>:btw:<random>`). Providers that keep per-conversation state, such as Claude Bridge, therefore run it separately from the main session. Providers that use the id as a prompt-cache key route the side conversation by its own key, so whether its first request reuses the main session's cached prefix is up to the provider: on OpenAI Codex it sometimes does and sometimes does not. Later requests in the same side conversation share its key and cache normally.
 
 Requires Pi 0.86 or later and the interactive terminal UI.
