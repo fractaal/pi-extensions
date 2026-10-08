@@ -4,9 +4,7 @@ import type { BtwThread } from "./thread.ts";
 
 export type PanelResult = "close" | "send" | "copy";
 
-export const TOGGLE_KEY = "alt+/";
-
-const HINTS = `enter ask · esc/${TOGGLE_KEY} hide · ctrl+c stop · ctrl+s send to main · ctrl+y copy · pgup/pgdn scroll`;
+const HINTS = "enter ask · esc hide · ctrl+c stop · ctrl+s send to main · ctrl+y copy · pgup/pgdn scroll";
 
 /** Height of the bordered chrome around the transcript: top border, divider, input, hints, bottom border. */
 const CHROME_ROWS = 5;
@@ -50,7 +48,7 @@ export class BtwPanel implements Component, Focusable {
 
 	handleInput(data: string): void {
 		// Hiding never stops the reply; it keeps streaming and is there when the panel reopens.
-		if (matchesKey(data, "escape") || matchesKey(data, TOGGLE_KEY)) {
+		if (matchesKey(data, "escape")) {
 			this.done("close");
 		} else if (matchesKey(data, "ctrl+c")) {
 			this.thread.abort();
