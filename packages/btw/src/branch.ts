@@ -1,4 +1,4 @@
-import { type AssistantMessage, getCurrentSystemMessage, getCurrentSystemPrompt, type Message, type ToolCall, type ToolResultMessage, type UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { convertToLlm } from "@earendil-works/pi-coding-agent";
 
 /** A session transcript message, before conversion for the provider. */
@@ -20,32 +20,11 @@ const PENDING_TOOL_TEXT =
 	"This tool call was still running in the main session when the user branched into /btw; its result is not available here.";
 
 /**
- * The transcript a request actually sends, from what `context_with_system` handlers see.
- *
- * An extension that returns a whole `systemPrompt` from `before_agent_start` forces the prompt for
- * that run. Pi records nothing for it and applies it after `context_with_system`, collapsing the
- * system messages into one head that holds the forced text and the current tools. `effectivePrompt`
- * is the run's prompt (`ctx.getSystemPrompt()` during the request); when it differs from the
- * transcript's own, apply the same collapse.
- */
-export function asSent(messages: AgentMessage[], effectivePrompt: string): AgentMessage[] {
-	const transcript = messages as Message[];
-	if (effectivePrompt === getCurrentSystemPrompt(transcript)) return messages;
-	const current = getCurrentSystemMessage(transcript);
-	const head: Message = {
-		role: "system",
-		content: effectivePrompt,
-		...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
-		timestamp: current?.timestamp ?? Date.now(),
-	};
-	return [head, ...messages.filter((m) => m.role !== "system")];
-}
-
-/**
  * The main session's context as its provider last saw it, brought up to date.
  *
- * The session's stored system message lacks run-level prompt changes, so the transcript of the
- * latest request (see {@link asSent}) is the only exact copy of the prompt prefix. Conversation
+ * The session's stored system message lacks a prompt that an extension forced for the run, so the
+ * transcript of the latest request (as `context_with_system` sees it) is the only exact copy of
+ * the prompt prefix. Conversation
  * messages the session gained since (the reply, tool results) are appended from the projection.
  * Without a captured request, or when the history no longer extends it (compaction, tree
  * navigation), the projection is the best available context.

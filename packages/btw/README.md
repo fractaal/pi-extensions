@@ -32,4 +32,4 @@ Side conversations exist only in memory. They are not written to the session fil
 
 Each side conversation has its own session id (`<main id>:btw:<random>`). Providers that keep per-conversation state, such as Claude Bridge, therefore run it separately from the main session. Providers that use the id as a prompt-cache key route the side conversation by its own key, so whether its first request reuses the main session's cached prefix is up to the provider: on OpenAI Codex it sometimes does and sometimes does not. Later requests in the same side conversation share its key and cache normally.
 
-Requires Pi 0.86 or later and the interactive terminal UI.
+Requires Pi 0.86.4 or later (the fractaal fork) and the interactive terminal UI.

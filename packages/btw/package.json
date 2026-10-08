@@ -34,13 +34,13 @@
     "prepack": "npm run build"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.86.3",
-    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.86.3",
-    "@earendil-works/pi-tui": "npm:@fractaal/pi-tui@0.86.3"
+    "@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.86.4",
+    "@earendil-works/pi-coding-agent": "npm:@fractaal/pi-coding-agent@0.86.4",
+    "@earendil-works/pi-tui": "npm:@fractaal/pi-tui@0.86.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.86.0",
-    "@earendil-works/pi-coding-agent": ">=0.86.0",
-    "@earendil-works/pi-tui": ">=0.86.0"
+    "@earendil-works/pi-ai": ">=0.86.4",
+    "@earendil-works/pi-coding-agent": ">=0.86.4",
+    "@earendil-works/pi-tui": ">=0.86.4"
   }
 }

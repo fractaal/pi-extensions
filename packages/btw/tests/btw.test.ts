@@ -1,6 +1,6 @@
 import { type Api, type AssistantMessage, type Context, createAssistantMessageEventStream, type Message, type Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { asSent, handoffText, mainContext } from "../src/branch.ts";
+import { handoffText, mainContext } from "../src/branch.ts";
 import { BtwThread } from "../src/thread.ts";
 
 const model = { id: "test-model", provider: "test", api: "test-api", reasoning: false } as unknown as Model<Api>;
@@ -135,17 +135,6 @@ describe("main context at the branch point", () => {
 	const call = assistant([{ type: "toolCall", id: "c1", name: "bash", arguments: {} }], "toolUse");
 	const result = { role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "a.txt" }], isError: false, timestamp: 4 } as Message;
 	const reply = assistant([{ type: "text", text: "One file." }]);
-
-	it("sends a prompt an extension forced for the run, as Pi does, with the same tools", () => {
-		expect(asSent([system, ask], "Base prompt.\n\nMemory section.")).toEqual([
-			{ role: "system", content: "Base prompt.\n\nMemory section.", toolsAdded: [bash], timestamp: 1 },
-			ask,
-		]);
-	});
-
-	it("leaves a transcript whose prompt was not forced as it is", () => {
-		expect(asSent([system, ask], "Base prompt.")).toEqual([system, ask]);
-	});
 
 	it("extends the last request with what the session gained since", () => {
 		const lastRequest = [{ ...system, content: "Forced." } as Message, ask];

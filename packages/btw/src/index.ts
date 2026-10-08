@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { convertToLlm, copyToClipboard, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { type AgentMessage, asSent, type BtwTurn, handoffText, mainContext } from "./branch.ts";
+import { type AgentMessage, type BtwTurn, handoffText, mainContext } from "./branch.ts";
 import { BtwPanel, type PanelResult } from "./panel.ts";
 import { BtwThread } from "./thread.ts";
 
@@ -131,8 +131,8 @@ export default function btwExtension(pi: ExtensionAPI) {
 	});
 
 	// Observe only: returning nothing leaves the request as other handlers made it.
-	pi.on("context_with_system", (event, ctx) => {
-		lastRequest = asSent([...event.messages], ctx.getSystemPrompt());
+	pi.on("context_with_system", (event) => {
+		lastRequest = [...event.messages];
 	});
 	// The captured request no longer describes the history the next request will extend.
 	pi.on("session_compact", () => {
