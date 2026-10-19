@@ -7,14 +7,15 @@
  *   { thinking }                   stream a reply that is only a thinking block
  *   { toolUse: { id, name, input } } stream a single tool call
  *   { toolUses: [{ id, name, input }, ...] } stream several tool calls in one message
- *   { status, message }            return an API error
+ *   { status, message }            return an API error; `errorType` and `details` fill in the error body
  * A streamed reply may add `outputTokens`, the count the message reports when it ends,
  * and `delayMs` or `after` (a promise) to start streaming only once that wait is over.
+ * Any reply may add `headers`, such as the rate-limit headers a Claude subscription returns.
  */
 import { createServer } from "node:http";
 
-function sse(res, events) {
-	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+function sse(res, events, headers) {
+	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", ...headers });
 	for (const event of events) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 	res.end();
 }
@@ -51,7 +52,7 @@ function streamReply(res, model, reply) {
 		);
 	}
 	events.push({ type: "message_stop" });
-	sse(res, events);
+	sse(res, events, reply.headers);
 }
 
 /** A message from a recorded request, flattened for assertions: role plus readable parts. */
@@ -93,8 +94,8 @@ export async function startFakeAnthropic(respond, { authorize } = {}) {
 			requests.push(request);
 			const reply = respond(request, requests.length - 1) ?? { text: "ok" };
 			if (reply.status) {
-				res.writeHead(reply.status, { "content-type": "application/json" });
-				res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: reply.message ?? "error" } }));
+				res.writeHead(reply.status, { "content-type": "application/json", ...reply.headers });
+				res.end(JSON.stringify({ type: "error", error: { type: reply.errorType ?? "invalid_request_error", message: reply.message ?? "error", ...(reply.details ? { details: reply.details } : {}) } }));
 				return;
 			}
 			if (reply.after) reply.after.then(() => streamReply(res, parsed.model, reply));
