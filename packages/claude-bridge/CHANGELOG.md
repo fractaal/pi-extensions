@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.0
+
+- Claude Code now decides when a slow turn has failed. The bridge used to abort a turn after 90 seconds without output and report that silence as a retryable 529 rate limit (`rateLimitType: "stream_idle"`), which cut off healthy replies on large contexts or high effort. Claude Code already has its own first-byte and stream-idle timeouts and retries, and reports each retry. `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` is no longer read. The stream-idle exports are removed: `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, `STREAM_IDLE_BACKOFF_HINT_MS`, `STREAM_IDLE_TIMEOUT_ENV`, `streamIdleTimeoutMsFromEnv`, `buildStreamIdleTimeoutErrorMessage`, `createStreamIdleWatchdog` and their types.
+
 ## 2.1.0
 
 - A request whose session id differs from the Pi session's own (an extension's side conversation such as `/btw`, or a nested session) runs in its own Claude Code session. Before, it shared the main session's Claude Code query: while the main turn waited on a tool, the side request was taken as that turn's tool results and steering, and the main turn's reply could arrive in the side request's stream.
