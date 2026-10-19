@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.0.1
+
+- The usage-credits helper runs Claude Code's `/usage-credits`. Claude Code renamed `/extra-usage`, which now only survives as a hidden alias.
+
 ## 4.0.0
 
 - The /extra-usage helper opens only when Claude Code says a request needs usage credits: a `credits_required` rejection, or a long-context request that needs usage credits. An ordinary session or weekly limit no longer opens it.
