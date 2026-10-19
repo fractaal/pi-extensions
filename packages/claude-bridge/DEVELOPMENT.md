@@ -10,7 +10,7 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 - Tool results whose IDs were never registered in the active assistant tool-use turn are refused instead of being queued against another pending call. Remaining handlers receive an internal-error result so the turn cannot report false success.
 - If a query tears down while parallel tool results are still queued or unresolved, the bridge writes diagnostics, marks the Claude session for rebuild, and re-imports delivered results from Pi history on the next turn.
 - Each query keeps its prompt input open until Claude Code reports the turn finished. Steering and follow-up messages that Pi appends after a tool batch are pushed into that input before the tool results are released, so Claude Code folds them into the running turn. There is no interrupt-and-resume path: resuming a Claude session that ends on a user-role message makes Claude Code insert a synthetic "No response requested." reply.
-- The query is released before Pi is told a turn ended, on every path (completion, Stop, stream-idle timeout, Claude errors). Pi can call again at once (Stop flushes queued messages); that call must start a fresh query.
+- The query is released before Pi is told a turn ended, on every path (completion, Stop, Claude errors). Pi can call again at once (Stop flushes queued messages); that call must start a fresh query.
 - A call with an already-aborted signal is Pi following up a stopped turn; the bridge returns `aborted` without starting Claude Code.
 
 ## Tools Claude sees
@@ -36,6 +36,7 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 
 - Claude Code enforces its own context window before calling the API, from the account's entitlement and its model registry (200k for models it does not know as 1M). The bridge does not override it: forcing `<id>[1m]` can claim a window the account is not entitled to, which fails past 200k as an extra-usage error instead of a recoverable overflow.
 - Claude Code reports account and API failures as a synthetic assistant message with an `error` code. The bridge returns these to Pi as errors, so "Prompt is too long" triggers Pi's overflow compaction and retry, and usage limits are not shown as assistant text. If such an error arrives while Pi is executing the turn's tool calls, the message Pi holds is left intact; the query is released and Pi's tool results continue the turn in a fresh query.
+- The bridge puts no time limit on a turn. Claude Code handles slow and stalled API responses itself: it has its own first-byte and stream-idle timeouts, retries, and reports each retry as an `api_retry` system message. A long silence before the first output is normal with a large context or high effort. The bridge cannot tell such a silence from a failure, so Claude Code's own errors, or the user's Stop, end the turn.
 - `tests/unit-claude-code-contract.mjs` runs the real bundled Claude Code binary against a scripted fake Anthropic API (`tests/lib/fake-anthropic.mjs`) and checks what Pi and the API receive.
 
 ## Executable resolution
@@ -47,6 +48,5 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 ## Diagnostics
 
 - Rate-limit errors are deduplicated before user notification. The bridge emits `vstack:rate-limit` so `pi-qol` can opt into reset-time auto-resume.
-- Stream-idle stalls close the stalled Claude Code subprocess and return a retryable assistant error. `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` accepts bare seconds or `ms`, `s`, and `m` suffixes.
 - Integrity diagnostics are written to `~/.pi/agent/claude-bridge-diag.log` with counts, affected tool names, and sampled tool-call IDs.
 - Startup preflight failures preserve the underlying `code`, `errno`, `syscall`, `path`, `cwd`, and detected executable file type before handing the error back to the SDK.

@@ -238,6 +238,26 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		assert.ok(mainRequests.at(-1).messages.at(-1).parts.some((part) => part.startsWith("tool_result:blue")));
 	});
 
+	it("a reply that starts after minutes of silence reaches Pi as Claude's answer", async (t) => {
+		const bridge = newBridge();
+		const start = fakeApi.requests.length;
+		let answer;
+		const answered = new Promise((resolve) => { answer = resolve; });
+		respond = () => ({ text: "Worth the wait.", after: answered });
+
+		// Pi's process lives through ten silent minutes; Claude Code keeps waiting on the API.
+		t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+		const pending = bridge.call(HAIKU, [user("Think this through carefully.")]);
+		while (fakeApi.requests.length === start) await new Promise((resolve) => setImmediate(resolve));
+		t.mock.timers.tick(10 * 60_000);
+		t.mock.timers.reset();
+		answer();
+
+		const reply = await pending;
+		assert.equal(reply.stopReason, "stop", reply.errorMessage);
+		assert.equal(textOf(reply), "Worth the wait.");
+	});
+
 	it("each turn reaches Pi with the output tokens Claude generated for it, including a tool-call turn", async () => {
 		const bridge = newBridge();
 		const start = fakeApi.requests.length;
