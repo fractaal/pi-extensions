@@ -746,7 +746,7 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 			const reply = await bridge.call(HAIKU, [user("hello")]);
 
 			assert.equal(reply.stopReason, "error");
-			assert.ok(bridge.notifications.some((note) => note.message.includes("opened /extra-usage helper")), JSON.stringify(bridge.notifications));
+			assert.ok(bridge.notifications.some((note) => note.message.includes("opened /usage-credits helper")), JSON.stringify(bridge.notifications));
 			await eventually(() => helperFinished(bridge), "the extra-usage helper to finish");
 		});
 
@@ -758,7 +758,7 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 
 			assert.equal(reply.stopReason, "error");
 			assert.match(reply.errorMessage, /Usage credits required for 1M context/);
-			assert.match(reply.errorMessage, /Opened Claude Code \/extra-usage helper/);
+			assert.match(reply.errorMessage, /Opened Claude Code \/usage-credits helper/);
 			await eventually(() => helperFinished(bridge), "the extra-usage helper to finish");
 		});
 	});

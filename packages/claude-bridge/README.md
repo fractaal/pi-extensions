@@ -95,7 +95,7 @@ Project settings in `.pi/settings.json` apply only after Pi marks the workspace 
 | Setting | What it does |
 | --- | --- |
 | Strict MCP config | Block filesystem MCP auto-loads; Pi owns tools. |
-| Allow extra usage helper | Let the bridge launch Claude Code's `/extra-usage` flow when extra usage is required. Billing/admin approval still happens in Claude's browser page. |
+| Allow extra usage helper | Let the bridge launch Claude Code's `/usage-credits` flow when a request needs usage credits. Billing/admin approval still happens in Claude's browser page. |
 | Fast mode | Enable Claude Code fast mode for bridge requests when the selected model supports it. |
 | Force Claude effort | Override Pi's thinking-level mapping for every claude-bridge request. `none` keeps Pi's selected level; `max` sends Claude Code `--effort max`. |
 | Model effort overrides | JSON object mapping model IDs to Claude Code efforts, e.g. `{"claude-opus-4-8":"max"}`. Per-model entries beat the global force setting. |
@@ -115,7 +115,7 @@ The bridge registers `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-
 
 ## Extra usage and rate limits
 
-Claude Code's `/extra-usage` local command works through the Claude Agent SDK. In Pi, use `/claude-bridge:extra` to run that flow from claude-bridge. With **Allow extra usage helper** on in `/extensions:settings`, the bridge also launches it automatically when Claude Code reports that a request needs usage credits: a rejection with the `credits_required` error code, or a long-context request that needs usage credits. An ordinary session or weekly limit does not launch it.
+Claude Code's `/usage-credits` local command (formerly `/extra-usage`) works through the Claude Agent SDK. In Pi, use `/claude-bridge:extra` to run that flow from claude-bridge. With **Allow extra usage helper** on in `/extensions:settings`, the bridge also launches it automatically when Claude Code reports that a request needs usage credits: a rejection with the `credits_required` error code, or a long-context request that needs usage credits. An ordinary session or weekly limit does not launch it.
 
 When Claude Code reports a rate-limit reset time, the bridge shows one clear `[rate-limit]` warning with timezone context and avoids repeating the same error line. If `pi-qol` is installed, it can use the reset time to resume later.
 

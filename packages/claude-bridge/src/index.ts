@@ -702,14 +702,14 @@ async function runExtraUsageHelper(cwd: string, config = loadBridgeConfig(cwd)):
 	if (claudeExecutable) preflightClaudeExecutable(claudeExecutable, cwd);
 
 	const helperQuery = query({
-		prompt: "/extra-usage",
+		prompt: "/usage-credits",
 		options: {
 			cwd,
 			env: { ...env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
 			maxTurns: 1,
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 			spawnClaudeCodeProcess: spawnClaudeCodeWithDiagnostics,
-			...makeCliDebugOptions("extra-usage"),
+			...makeCliDebugOptions("usage-credits"),
 		},
 	});
 	const outputs: string[] = [];
@@ -721,7 +721,7 @@ async function runExtraUsageHelper(cwd: string, config = loadBridgeConfig(cwd)):
 	} finally {
 		helperQuery.close();
 	}
-	return outputs.join("\n").trim() || "Claude Code /extra-usage completed.";
+	return outputs.join("\n").trim() || "Claude Code /usage-credits completed.";
 }
 
 function launchExtraUsageHelperIfAllowed(cwd: string, config: Config, reason: string): boolean {
@@ -1726,7 +1726,7 @@ function failTurnWithClaudeError(errorText: string, cwd: string, bridgeConfig: C
 	if (isExtraUsageRequiredMessage(errorText)) {
 		const openedExtraUsage = launchExtraUsageHelperIfAllowed(cwd, bridgeConfig, reason);
 		errorMessage += openedExtraUsage
-			? "\n\nOpened Claude Code /extra-usage helper. Complete billing/admin flow in the browser, then retry the prompt."
+			? "\n\nOpened Claude Code /usage-credits helper. Complete billing/admin flow in the browser, then retry the prompt."
 			: "\n\nRun /claude-bridge:extra, or enable Allow extra usage helper in settings.";
 	}
 	c.handledTerminalError = true;
@@ -1829,7 +1829,7 @@ async function consumeQuery(
 						source: "claude-bridge",
 						status: "rejected",
 					});
-					bridgeRuntime().piUI?.notify(`${RATE_LIMIT_TOKEN} Claude ${reason} hit — resets ${resetsAt}${launchedExtraUsage ? "; opened /extra-usage helper" : ""}`, "warning");
+					bridgeRuntime().piUI?.notify(`${RATE_LIMIT_TOKEN} Claude ${reason} hit — resets ${resetsAt}${launchedExtraUsage ? "; opened /usage-credits helper" : ""}`, "warning");
 				} else if (info?.status === "allowed_warning") {
 					const warning = formatAllowedRateLimitWarning(info);
 					if (warning) bridgeRuntime().piUI?.notify(warning, "warning");
@@ -2222,7 +2222,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 			releaseQuery();
 			if (abortCtx.turnOutput) {
 				abortCtx.turnOutput.stopReason = "error";
-				abortCtx.turnOutput.errorMessage = `${error instanceof Error ? error.message : String(error)}${openedExtraUsage ? "\n\nOpened Claude Code /extra-usage helper. Complete billing/admin flow in the browser, then retry the prompt." : ""}`;
+				abortCtx.turnOutput.errorMessage = `${error instanceof Error ? error.message : String(error)}${openedExtraUsage ? "\n\nOpened Claude Code /usage-credits helper. Complete billing/admin flow in the browser, then retry the prompt." : ""}`;
 			}
 			piStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
 			piStream?.end();
@@ -2258,7 +2258,7 @@ function showBridgeStatus(ctx: { ui: ExtensionUIContext; cwd?: string }): void {
 	ctx.ui.notify([
 		`Claude bridge: ${config.enabled === false ? "disabled" : "enabled"}`,
 		`Extra usage auto-helper: ${extraUsageAllowed(config) ? "on" : "off"} (settings)`,
-		`Use /claude-bridge:extra to run Claude Code /extra-usage now.`,
+		`Use /claude-bridge:extra to run Claude Code /usage-credits now.`,
 	].join("\n"), "info");
 }
 
@@ -2291,13 +2291,13 @@ function registerBridgeCommands(pi: ExtensionAPI, run: RunInBridgeRuntime): void
 	pi.registerCommand("claude-bridge", {
 		description: "Open Claude bridge settings/status",
 		handler: (args: string, ctx) => run(async () => {
-			if (args.trim()) ctx.ui.notify("Unknown /claude-bridge argument. Use /claude-bridge:extra to run Claude Code /extra-usage.", "warning");
+			if (args.trim()) ctx.ui.notify("Unknown /claude-bridge argument. Use /claude-bridge:extra to run Claude Code /usage-credits.", "warning");
 			if (await tryOpenExtensionManagerSettings(ctx)) return;
 			showBridgeStatus(ctx);
 		}),
 	});
 	pi.registerCommand("claude-bridge:extra", {
-		description: "Run Claude Code /extra-usage through claude-bridge",
+		description: "Run Claude Code /usage-credits through claude-bridge",
 		handler: (_args: string, ctx) => run(() => runExtraUsage(ctx)),
 	});
 }
