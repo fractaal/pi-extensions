@@ -8,7 +8,8 @@
  *   { toolUse: { id, name, input } } stream a single tool call
  *   { toolUses: [{ id, name, input }, ...] } stream several tool calls in one message
  *   { status, message }            return an API error
- * A streamed reply may add `outputTokens`, the count the message reports when it ends.
+ * A streamed reply may add `outputTokens`, the count the message reports when it ends,
+ * and `delayMs` or `after` (a promise) to start streaming only once that wait is over.
  */
 import { createServer } from "node:http";
 
@@ -96,7 +97,8 @@ export async function startFakeAnthropic(respond, { authorize } = {}) {
 				res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: reply.message ?? "error" } }));
 				return;
 			}
-			if (reply.delayMs) setTimeout(() => streamReply(res, parsed.model, reply), reply.delayMs);
+			if (reply.after) reply.after.then(() => streamReply(res, parsed.model, reply));
+			else if (reply.delayMs) setTimeout(() => streamReply(res, parsed.model, reply), reply.delayMs);
 			else streamReply(res, parsed.model, reply);
 		});
 	});
