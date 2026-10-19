@@ -77,6 +77,16 @@ const offeredTools = (request) => ({
 		.flatMap((part) => part.includes("deferred tools are now available") ? part.split("\n").filter((line) => line.startsWith("mcp__")) : []),
 });
 const hasFakeReply = (request) => request.messages.some((message) => message.parts.some((part) => /No response requested/.test(part)));
+// A Claude subscription login: Claude Code reads plan limits from the response headers and
+// reports them as rate-limit events. The token is synthetic; only the fake API receives it.
+const SUBSCRIBER = { ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-synthetic-test-only" };
+const inAnHour = () => String(Math.floor(Date.now() / 1000) + 3600);
+async function eventually(condition, what) {
+	for (const deadline = Date.now() + 20_000; !condition();) {
+		if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+}
 
 let workDir;
 let fakeApi;
@@ -686,6 +696,92 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		const request = fakeApi.requests.at(-1);
 		assert.equal(request.messages.some((message) => message.parts.some((part) => part.startsWith("tool_use"))), false);
 		assert.equal(hasFakeReply(request), false);
+	});
+
+	describe("for a subscriber who allows the extra-usage helper", () => {
+		const settingsFile = () => join(workDir, "user", "claude-bridge.json");
+		before(() => {
+			mkdirSync(join(workDir, "user"), { recursive: true });
+			writeFileSync(settingsFile(), JSON.stringify({ provider: { allowExtraUsage: true } }));
+		});
+		after(() => rmSync(settingsFile(), { force: true }));
+		const helperFinished = (bridge) => bridge.notifications.some((note) => note.message.startsWith("Claude extra usage helper"));
+
+		it("an ordinary session limit is reported without opening the extra-usage helper", async () => {
+			const bridge = newBridge(SUBSCRIBER);
+			respond = () => ({
+				status: 429, errorType: "rate_limit_error", message: "Rate limited",
+				headers: {
+					"anthropic-ratelimit-unified-status": "rejected",
+					"anthropic-ratelimit-unified-representative-claim": "five_hour",
+					"anthropic-ratelimit-unified-reset": inAnHour(),
+					// Present on ordinary subscriber limits; they do not mean usage credits are needed.
+					"anthropic-ratelimit-unified-overage-status": "rejected",
+					"anthropic-ratelimit-unified-overage-disabled-reason": "org_level_disabled",
+				},
+			});
+
+			const reply = await bridge.call(HAIKU, [user("hello")]);
+
+			assert.equal(reply.stopReason, "error");
+			assert.match(reply.errorMessage, /session limit/);
+			assert.doesNotMatch(reply.errorMessage, /extra.usage/i);
+			const notes = bridge.notifications.map((note) => note.message);
+			assert.ok(notes.some((note) => note.startsWith("[rate-limit]")), "the limit itself is reported");
+			assert.equal(notes.some((note) => /extra.usage/i.test(note)), false, notes.join("\n"));
+		});
+
+		it("a rejection that needs usage credits opens the extra-usage helper", async () => {
+			const bridge = newBridge(SUBSCRIBER);
+			respond = () => ({
+				status: 429, errorType: "rate_limit_error", message: "Out of usage credits.",
+				details: { error_code: "credits_required", disabled_reason: "out_of_credits" },
+				headers: {
+					"anthropic-ratelimit-unified-status": "rejected",
+					"anthropic-ratelimit-unified-overage-status": "rejected",
+					"anthropic-ratelimit-unified-overage-disabled-reason": "out_of_credits",
+				},
+			});
+
+			const reply = await bridge.call(HAIKU, [user("hello")]);
+
+			assert.equal(reply.stopReason, "error");
+			assert.ok(bridge.notifications.some((note) => note.message.includes("opened /extra-usage helper")), JSON.stringify(bridge.notifications));
+			await eventually(() => helperFinished(bridge), "the extra-usage helper to finish");
+		});
+
+		it("a long-context request that needs usage credits opens the extra-usage helper", async () => {
+			const bridge = newBridge(SUBSCRIBER);
+			respond = () => ({ status: 429, errorType: "rate_limit_error", message: "Extra usage is required for long context requests." });
+
+			const reply = await bridge.call(HAIKU, [user("hello")]);
+
+			assert.equal(reply.stopReason, "error");
+			assert.match(reply.errorMessage, /Usage credits required for 1M context/);
+			assert.match(reply.errorMessage, /Opened Claude Code \/extra-usage helper/);
+			await eventually(() => helperFinished(bridge), "the extra-usage helper to finish");
+		});
+	});
+
+	it("a subscriber nearing a limit sees how much of it is used, as Claude Code reports it", async () => {
+		const bridge = newBridge(SUBSCRIBER);
+		respond = () => ({
+			text: "ok",
+			headers: {
+				"anthropic-ratelimit-unified-status": "allowed_warning",
+				"anthropic-ratelimit-unified-representative-claim": "seven_day",
+				"anthropic-ratelimit-unified-reset": inAnHour(),
+				"anthropic-ratelimit-unified-7d-utilization": "0.759",
+				"anthropic-ratelimit-unified-7d-reset": inAnHour(),
+				"anthropic-ratelimit-unified-7d-surpassed-threshold": "0.75",
+			},
+		});
+
+		const reply = await bridge.call(HAIKU, [user("hello")]);
+
+		assert.equal(textOf(reply), "ok");
+		const warnings = bridge.notifications.filter((note) => note.level === "warning").map((note) => note.message);
+		assert.ok(warnings.some((warning) => warning.includes("You've used 75% of your weekly limit")), JSON.stringify(warnings));
 	});
 });
 

@@ -115,11 +115,11 @@ The bridge registers `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-
 
 ## Extra usage and rate limits
 
-Claude Code's `/extra-usage` local command works through the Claude Agent SDK. In Pi, use `/claude-bridge:extra` to run that flow from claude-bridge. Persist automatic launch on extra-usage errors with **Allow extra usage helper** in `/extensions:settings`.
+Claude Code's `/extra-usage` local command works through the Claude Agent SDK. In Pi, use `/claude-bridge:extra` to run that flow from claude-bridge. With **Allow extra usage helper** on in `/extensions:settings`, the bridge also launches it automatically when Claude Code reports that a request needs usage credits: a rejection with the `credits_required` error code, or a long-context request that needs usage credits. An ordinary session or weekly limit does not launch it.
 
 When Claude Code reports a rate-limit reset time, the bridge shows one clear `[rate-limit]` warning with timezone context and avoids repeating the same error line. If `pi-qol` is installed, it can use the reset time to resume later.
 
-Allowed-warning rate-limit events are filtered before user notification. The bridge normalizes unambiguous numeric utilization (`0 < value < 1` as fractional, `1 < value <= 100` as percent), suppresses low or unit-ambiguous values such as exact `1`, and only shows a neutral warning at 80%+ instead of claiming an unverified `% used` value. Check Claude Code `/usage` for exact allowed-warning utilization.
+Approaching a plan limit is shown the way Claude Code shows it. Claude Code reports utilization as a fraction of the limit; from 70% the bridge shows a warning such as `You've used 91% of your weekly limit`, and below 70% it shows nothing.
 
 ## Plan usage for hosts
 

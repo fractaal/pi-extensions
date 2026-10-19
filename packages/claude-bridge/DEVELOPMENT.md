@@ -48,5 +48,6 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 ## Diagnostics
 
 - Rate-limit errors are deduplicated before user notification. The bridge emits `vstack:rate-limit` so `pi-qol` can opt into reset-time auto-resume.
+- The extra-usage helper and allowed-warning notices follow Claude Code's own signals. A request needs usage credits when its rate-limit info carries `errorCode: "credits_required"` or its error is a long-context credit denial (the API's "Extra usage is required for long context" or "Usage credits are required for long context", or Claude Code's "Usage credits required for 1M context" for subscribers). Rate-limit info for ordinary limits also carries `overage*` fields, so matching words in it misfires. Allowed-warning utilization is a fraction; Claude Code warns from 0.7.
 - Integrity diagnostics are written to `~/.pi/agent/claude-bridge-diag.log` with counts, affected tool names, and sampled tool-call IDs.
 - Startup preflight failures preserve the underlying `code`, `errno`, `syscall`, `path`, `cwd`, and detected executable file type before handing the error back to the SDK.

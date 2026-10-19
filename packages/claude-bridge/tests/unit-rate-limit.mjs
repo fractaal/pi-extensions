@@ -6,36 +6,38 @@ import assert from "node:assert/strict";
 import { formatAllowedRateLimitWarning } from "../src/index.ts";
 
 describe("rate_limit_event allowed_warning", () => {
-	it("suppresses low fractional utilization for seven_day warnings", () => {
-		const warning = formatAllowedRateLimitWarning({
-			status: "allowed_warning",
-			rateLimitType: "seven_day",
-			utilization: 0.01,
-		});
+	const warning = (fields) => formatAllowedRateLimitWarning({ status: "allowed_warning", rateLimitType: "seven_day", ...fields });
 
-		assert.equal(warning, undefined);
+	it("warns from 70% of a limit with the floored percentage, reading utilization as a fraction like Claude Code", () => {
+		assert.equal(warning({ utilization: 0.69 }), undefined);
+		assert.equal(warning({ utilization: 0 }), undefined);
+		assert.equal(warning({ utilization: 0.7 }), "Claude rate limit warning: You've used 70% of your weekly limit");
+		assert.equal(warning({ utilization: 0.919 }), "Claude rate limit warning: You've used 91% of your weekly limit");
+		assert.equal(warning({ utilization: 1 }), "Claude rate limit warning: You've used 100% of your weekly limit");
 	});
 
-	it("suppresses exact 1 because SDK unit is ambiguous", () => {
-		const warning = formatAllowedRateLimitWarning({
-			status: "allowed_warning",
-			rateLimitType: "seven_day",
-			utilization: 1,
-		});
-
-		assert.equal(warning, undefined);
+	it("still warns when no utilization is reported", () => {
+		assert.equal(warning({}), "Claude rate limit warning: Approaching weekly limit");
 	});
 
-	it("warns at high utilization reported as a fraction or as a percent", () => {
-		for (const utilization of [0.91, 91]) {
-			assert.equal(
-				formatAllowedRateLimitWarning({
-					status: "allowed_warning",
-					rateLimitType: "seven_day",
-					utilization,
-				}),
-				"Claude rate limit warning: nearing seven_day limit; check Claude Code /usage for exact utilization.",
-			);
+	it("names each limit the way Claude Code does", () => {
+		const names = {
+			five_hour: "session limit",
+			seven_day: "weekly limit",
+			seven_day_opus: "Opus limit",
+			seven_day_sonnet: "Sonnet limit",
+			seven_day_overage_included: "Fable limit",
+			overage: "usage credit limit",
+			monthly: "monthly limit",
+		};
+		for (const [rateLimitType, name] of Object.entries(names)) {
+			assert.equal(warning({ rateLimitType, utilization: 0.8 }), `Claude rate limit warning: You've used 80% of your ${name}`);
 		}
+	});
+
+	it("shows nothing for other statuses or a limit Claude Code does not name", () => {
+		assert.equal(formatAllowedRateLimitWarning({ status: "allowed", rateLimitType: "seven_day", utilization: 0.95 }), undefined);
+		assert.equal(formatAllowedRateLimitWarning({ status: "rejected", rateLimitType: "seven_day", utilization: 0.95 }), undefined);
+		assert.equal(warning({ rateLimitType: undefined, utilization: 0.95 }), undefined);
 	});
 });

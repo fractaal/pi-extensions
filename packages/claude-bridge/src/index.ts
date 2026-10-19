@@ -599,15 +599,21 @@ function runWithBridgeRuntime<T>(runtime: BridgeRuntimeState, callback: () => T)
 const RATE_LIMIT_AUTO_RESUME_EVENT = "vstack:rate-limit";
 const RATE_LIMIT_TOKEN = "[rate-limit]";
 
+// Claude Code's own signals that a request needs usage credits ("extra usage"):
+// the API's credits_required error code, which Claude Code copies onto rate-limit
+// info, and the long-context denials, in the API's wording and in the wording
+// Claude Code uses for subscribers. Rate-limit info for ordinary limits carries
+// overage fields too, so matching words in it would misfire.
+const EXTRA_USAGE_REQUIRED_TEXTS = [
+	"Extra usage is required for long context",
+	"Usage credits are required for long context",
+	"Usage credits required for 1M context",
+];
+
 export function isExtraUsageRequiredMessage(value: unknown): boolean {
-	let text: string;
-	if (typeof value === "string") text = value;
-	else if (value instanceof Error) text = value.message;
-	else {
-		try { text = JSON.stringify(value ?? ""); }
-		catch { text = String(value); }
-	}
-	return /extra[-\s]?usage|overage|extra usage billing|extra usage credits|1M context/i.test(text);
+	if (value instanceof Error) return isExtraUsageRequiredMessage(value.message);
+	if (typeof value === "string") return EXTRA_USAGE_REQUIRED_TEXTS.some((text) => value.includes(text));
+	return (value as { errorCode?: unknown } | null | undefined)?.errorCode === "credits_required";
 }
 
 export function uniqueNonEmptyLines(values: unknown[]): string[] {
@@ -642,28 +648,26 @@ export function formatResetTimestamp(value: unknown): string {
 	});
 }
 
-export const ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD = 80;
-
-export function normalizeRateLimitUtilization(value: unknown): number | undefined {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
-	if (value === 0) return 0;
-	// Claude SDK payloads have appeared as both fractions and percentages.
-	// Exact 1 is unit-ambiguous (1% vs 100%), so do not use it for allowed-warning copy.
-	if (value > 0 && value < 1) return value * 100;
-	if (value > 1 && value <= 100) return value;
-	return undefined;
-}
-
-function rateLimitTypeLabel(value: unknown): string {
-	const text = typeof value === "string" ? value.trim() : "";
-	return text || "unknown";
-}
+// Claude Code's allowed-warning rule: utilization is a fraction of the limit,
+// nothing is shown below 70%, and the warning names the limit with the floored
+// percentage used.
+const ALLOWED_WARNING_MIN_UTILIZATION = 0.7;
+const RATE_LIMIT_NAMES: Record<string, string> = {
+	five_hour: "session limit",
+	seven_day: "weekly limit",
+	seven_day_opus: "Opus limit",
+	seven_day_sonnet: "Sonnet limit",
+	seven_day_overage_included: "Fable limit",
+	overage: "usage credit limit",
+};
 
 export function formatAllowedRateLimitWarning(info: { status?: unknown; utilization?: unknown; rateLimitType?: unknown } | null | undefined): string | undefined {
-	if (info?.status !== "allowed_warning") return undefined;
-	const utilization = normalizeRateLimitUtilization(info.utilization);
-	if (utilization === undefined || utilization < ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD) return undefined;
-	return `Claude rate limit warning: nearing ${rateLimitTypeLabel(info.rateLimitType)} limit; check Claude Code /usage for exact utilization.`;
+	if (info?.status !== "allowed_warning" || typeof info.rateLimitType !== "string" || !info.rateLimitType) return undefined;
+	const utilization = typeof info.utilization === "number" && Number.isFinite(info.utilization) ? info.utilization : undefined;
+	if (utilization !== undefined && utilization < ALLOWED_WARNING_MIN_UTILIZATION) return undefined;
+	const limit = RATE_LIMIT_NAMES[info.rateLimitType] ?? `${info.rateLimitType} limit`;
+	const percent = utilization ? Math.floor(utilization * 100) : undefined;
+	return `Claude rate limit warning: ${percent ? `You've used ${percent}% of your ${limit}` : `Approaching ${limit}`}`;
 }
 
 function emitRateLimitEvent(payload: Record<string, unknown>): void {
@@ -1785,10 +1789,10 @@ async function consumeQuery(
 					ctx().currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: ctx().turnOutput });
 					ctx().currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: ctx().turnOutput });
 					ctx().currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: ctx().turnOutput });
-				} else if (message.subtype !== "success" && isExtraUsageRequiredMessage(message)) {
-					const errorLines = Array.isArray((message as any).errors) ? uniqueNonEmptyLines((message as any).errors) : [];
+				} else if (message.subtype !== "success") {
+					const errorLines = Array.isArray(message.errors) ? uniqueNonEmptyLines(message.errors) : [];
 					const errors = errorLines.length > 0 ? errorLines.join("\n") : message.subtype;
-					failTurnWithClaudeError(errors, cwd, bridgeConfig, "result error");
+					if (isExtraUsageRequiredMessage(errors)) failTurnWithClaudeError(errors, cwd, bridgeConfig, "result error");
 				}
 				break;
 			case "system":
@@ -1829,7 +1833,7 @@ async function consumeQuery(
 				} else if (info?.status === "allowed_warning") {
 					const warning = formatAllowedRateLimitWarning(info);
 					if (warning) bridgeRuntime().piUI?.notify(warning, "warning");
-					else debug("consumeQuery: suppressed low/ambiguous allowed_warning rate_limit_event", JSON.stringify(info).slice(0, 300));
+					else debug("consumeQuery: allowed_warning rate_limit_event below Claude Code's warning threshold", JSON.stringify(info).slice(0, 300));
 				}
 				break;
 			}
