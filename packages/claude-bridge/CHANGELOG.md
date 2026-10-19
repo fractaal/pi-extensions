@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.0.0
+
+- The /extra-usage helper opens only when Claude Code says a request needs usage credits: a `credits_required` rejection, or a long-context request that needs usage credits. An ordinary session or weekly limit no longer opens it.
+- Limit warnings follow Claude Code: from 70% of a limit they show how much is used, for example "You've used 91% of your weekly limit". `normalizeRateLimitUtilization` and `ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD` are removed.
+
 ## 3.0.0
 
 - Claude Code now decides when a slow turn has failed. The bridge used to abort a turn after 90 seconds without output and report that silence as a retryable 529 rate limit (`rateLimitType: "stream_idle"`), which cut off healthy replies on large contexts or high effort. Claude Code already has its own first-byte and stream-idle timeouts and retries, and reports each retry. `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` is no longer read. The stream-idle exports are removed: `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, `STREAM_IDLE_BACKOFF_HINT_MS`, `STREAM_IDLE_TIMEOUT_ENV`, `streamIdleTimeoutMsFromEnv`, `buildStreamIdleTimeoutErrorMessage`, `createStreamIdleWatchdog` and their types.
