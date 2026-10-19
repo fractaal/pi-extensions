@@ -132,18 +132,18 @@ describe("preflightClaudeExecutable", () => {
 			"--input-type=module",
 			"-e",
 			`const { spawnClaudeCodeWithDiagnostics } = await import(${JSON.stringify(bundle)});\n` +
-				`const { writeFileSync } = await import("node:fs");\n` +
+				`const { existsSync, writeFileSync } = await import("node:fs");\n` +
 				`const child = spawnClaudeCodeWithDiagnostics({ command: process.execPath, args: ["-e", ${JSON.stringify(`const { writeFileSync } = require("node:fs"); writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`)}], cwd: ${JSON.stringify(dir)}, env: process.env, signal: new AbortController().signal });\n` +
 				`child.once("error", (error) => { writeFileSync(${JSON.stringify(join(dir, "host-error.txt"))}, String(error)); process.exit(1); });\n` +
-				`console.log("ready");\nsetTimeout(() => process.exit(0), 150);`,
+				// The host disappears only once Claude Code is running; a busy machine
+				// can take well over a fixed delay to start the supervisor and its child.
+				`console.log("ready");\nsetInterval(() => { if (existsSync(${JSON.stringify(pidFile)})) process.exit(0); }, 10);\nsetTimeout(() => process.exit(0), 10000);`,
 		], { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
 		let output = "";
 		host.stdout.on("data", (chunk) => { output += chunk.toString(); });
-		const closed = new Promise((resolve) => host.once("close", resolve));
-		for (let attempt = 0; attempt < 50 && !existsSync(pidFile); attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => host.once("close", resolve));
 		assert.equal(output.trim(), "ready");
 		assert.ok(existsSync(pidFile), "the supervised Claude child started");
-		await closed;
 		const childPid = Number(readFileSync(pidFile, "utf8"));
 		let alive = true;
 		for (let attempt = 0; attempt < 60 && alive; attempt++) {
