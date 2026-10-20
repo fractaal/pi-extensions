@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, open, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -15,7 +15,13 @@ import agenticProcessesExtension, {
 	requestAgenticProcessManagementApi,
 } from "../src/index.ts";
 import { createMonitorManager } from "../src/monitor.ts";
-import { killChildProcessTree, killProcessTree, resolveBashShell, windowsBashCandidates } from "../src/shell.ts";
+import {
+	killChildProcessTree,
+	killProcessTree,
+	recordProcessGroup,
+	resolveBashShell,
+	windowsBashCandidates,
+} from "../src/shell.ts";
 import { emitToSubscribers } from "../src/subscribers.ts";
 
 type TextToolResult = {
@@ -130,6 +136,17 @@ describe("shell resolution and process termination", () => {
 		).toEqual({ command: bashPath, args: ["-lc"] });
 	});
 
+	it("prefers Git Bash over WSL's System32 bash.exe launcher on PATH", () => {
+		const wslBash = String.raw`C:\WINDOWS\system32\bash.exe`;
+		const gitBash = String.raw`C:\Program Files\Git\bin\bash.exe`;
+		const env = { Path: String.raw`C:\WINDOWS\system32\;C:\Program Files\Git\cmd`, ProgramFiles: String.raw`C:\Program Files`, SystemRoot: String.raw`C:\WINDOWS` };
+		expect(resolveBashShell({ platform: "win32", env, existsSync: existsOnly([wslBash, gitBash]) })).toEqual({ command: gitBash, args: ["-lc"] });
+		expect(() => resolveBashShell({ platform: "win32", env, existsSync: existsOnly([wslBash]) })).toThrow(/Install Git for Windows/);
+		expect(
+			resolveBashShell({ platform: "win32", env: { ARIA_LOCAL_BASH_PATH: wslBash }, existsSync: existsOnly([wslBash]) }),
+		).toEqual({ command: wslBash, args: ["-lc"] });
+	});
+
 	it("fails with an actionable Windows Bash setup message when no Bash is available", () => {
 		expect(() =>
 			resolveBashShell({
@@ -187,6 +204,46 @@ describe("shell resolution and process termination", () => {
 
 		killer.emit("close", 1);
 		await expect(dispatched).rejects.toThrow("taskkill exited with code 1");
+	});
+
+	it("records the MSYS process group only on Windows, without ever writing to command output", () => {
+		const taskDir = String.raw`C:\Users\O'Neil\AppData\Local\Temp\task`;
+		expect(recordProcessGroup("echo hi", taskDir, "win32")).toBe(
+			`printf '%s' "$$" 2>/dev/null > 'C:/Users/O'\\''Neil/AppData/Local/Temp/task/process-group'\necho hi`,
+		);
+		expect(recordProcessGroup("echo hi", "/tmp/task", "linux")).toBe("echo hi");
+	});
+
+	it("stops a Windows Git Bash command by its recorded process group, falling back to taskkill", async () => {
+		const taskDir = await mkdtemp(join(tmpdir(), "agentic-processes-group-"));
+		await writeFile(join(taskDir, "process-group"), "1726");
+		const calls: string[][] = [];
+		const processes: EventEmitter[] = [];
+		const fakeSpawn = ((command: string, args: string[]) => {
+			calls.push([command, ...args]);
+			const process = new EventEmitter();
+			processes.push(process);
+			return process;
+		}) as never;
+		const options = { platform: "win32" as const, spawn: fakeSpawn, shell: "bash.exe", processGroupDir: taskDir };
+
+		const stopped = killProcessTree(1234, "SIGTERM", options);
+		processes[0]?.emit("close", 0);
+		await expect(stopped).resolves.toBeUndefined();
+		expect(calls).toEqual([["bash.exe", "-c", "kill -s TERM -- -1726"]]);
+
+		calls.length = 0;
+		processes.length = 0;
+		const fallback = killProcessTree(1234, "SIGTERM", options);
+		processes[0]?.emit("close", 1);
+		await vi.waitFor(() => expect(calls[1]).toEqual(["taskkill", "/PID", "1234", "/T", "/F"]));
+		processes[1]?.emit("close", 0);
+		await expect(fallback).resolves.toBeUndefined();
+
+		calls.length = 0;
+		killChildProcessTree({ pid: 4321, kill: vi.fn() }, "SIGKILL", { ...options, processGroupDir: join(taskDir, "missing") });
+		expect(calls).toEqual([["taskkill", "/PID", "4321", "/T", "/F"]]);
+		await rm(taskDir, { recursive: true, force: true });
 	});
 
 	it("falls back to ChildProcess.kill if Windows taskkill cannot start", () => {
@@ -754,6 +811,51 @@ describe("agentic processes extension", () => {
 		);
 		expect(text(killed)).toContain(`Task ${runningTaskId}`);
 		expect(events.emits.some((event) => event.name === "aria-local:background-task-update")).toBe(true);
+	});
+
+	it("stopping a command also stops the processes it started", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		const bashManager = createBashTaskManager(apiMock.api);
+		const monitorManager = createMonitorManager(apiMock.api);
+		// Record the backgrounded child's OS pid (Git Bash exposes it as /proc/<pid>/winpid on Windows).
+		const startsChild = (name: string) =>
+			`sleep 300 & c=$!; { cat /proc/$c/winpid 2>/dev/null || echo $c; } > ${name}; wait`;
+		const childPid = async (name: string) => {
+			await vi.waitFor(async () => expect((await stat(join(cwd, name))).size).toBeGreaterThan(0));
+			return Number((await readFile(join(cwd, name), "utf8")).trim());
+		};
+		const isRunning = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
+		const killed = await bashManager.start({ command: startsChild("killed"), cwd, backgroundAfterSeconds: 0.01 });
+		const killedChild = await childPid("killed");
+		await bashManager.stop(killed.taskId, "test");
+
+		const timedOut = await bashManager.start({
+			command: startsChild("timed-out"),
+			cwd,
+			backgroundAfterSeconds: 0.01,
+			killAfterSeconds: 1,
+		});
+		const timedOutChild = await childPid("timed-out");
+		await vi.waitFor(() => expect(bashManager.get(timedOut.taskId)?.status).toBe("killed"), { timeout: 5000 });
+
+		const monitorId = monitorIdFrom(await monitorManager.start({ command: startsChild("monitor"), inject: false }, cwd));
+		const monitorChild = await childPid("monitor");
+		await monitorManager.stop({ id: monitorId });
+
+		await vi.waitFor(
+			() => expect([killedChild, timedOutChild, monitorChild].filter(isRunning)).toEqual([]),
+			{ timeout: 5000 },
+		);
 	});
 
 	it("sends background completion with steering delivery", async () => {

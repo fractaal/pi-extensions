@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
-import { existsSync as nodeExistsSync } from "node:fs";
+import { existsSync as nodeExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 export interface BashShellSpec {
@@ -21,6 +21,22 @@ export interface ShellResolutionOptions {
 export interface KillProcessOptions {
 	platform?: Platform;
 	spawn?: Spawn;
+	/** Task directory where a Windows Git Bash recorded its MSYS process group; see recordProcessGroup. */
+	processGroupDir?: string;
+	/** Bash that signals the recorded process group. Defaults to resolveBashShell(). */
+	shell?: string;
+}
+
+/**
+ * Git Bash emulates fork/exec, so on Windows a command's processes are not descendants of the
+ * spawned bash in the Windows process tree and `taskkill /T` cannot reach them. There the shell
+ * records its MSYS pid, which leads its own process group, so kills can signal the whole group
+ * the way POSIX hosts signal -pgid.
+ */
+export function recordProcessGroup(command: string, taskDir: string, platform: Platform = process.platform): string {
+	if (platform !== "win32") return command;
+	const file = path.win32.join(taskDir, "process-group").replace(/\\/g, "/").replace(/'/g, `'\\''`);
+	return `printf '%s' "$$" 2>/dev/null > '${file}'\n${command}`;
 }
 
 export function resolveBashShell(options: ShellResolutionOptions = {}): BashShellSpec {
@@ -50,8 +66,11 @@ export function resolveBashShell(options: ShellResolutionOptions = {}): BashShel
 }
 
 export function windowsBashCandidates(env: Env = process.env): string[] {
+	// System32\bash.exe is WSL's launcher: it runs commands inside Linux, without the Windows
+	// environment, and loses their output when spawned detached. It only works when chosen explicitly.
+	const wslLauncher = path.win32.join(getEnv(env, "SystemRoot") || "C:\\Windows", "System32", "bash.exe").toLowerCase();
 	return uniqueStrings([
-		...pathCandidates("bash.exe", env, "win32"),
+		...pathCandidates("bash.exe", env, "win32").filter((candidate) => candidate.toLowerCase() !== wslLauncher),
 		...(getEnv(env, "ProgramFiles") ? [path.win32.join(getEnv(env, "ProgramFiles") ?? "", "Git", "bin", "bash.exe")] : []),
 		...(getEnv(env, "ProgramFiles") ? [path.win32.join(getEnv(env, "ProgramFiles") ?? "", "Git", "usr", "bin", "bash.exe")] : []),
 		...(getEnv(env, "ProgramFiles(x86)")
@@ -75,7 +94,8 @@ export function killChildProcessTree(
 	if (!child.pid) return;
 	const platform = options.platform ?? process.platform;
 	if (platform === "win32") {
-		const killer = spawnTaskkill(child.pid, signal, options.spawn ?? nodeSpawn);
+		signalProcessGroup(signal, options)?.on("error", () => undefined);
+		const killer = spawnTaskkill(child.pid, options.spawn ?? nodeSpawn);
 		killer.on("error", () => {
 			try {
 				child.kill(signal);
@@ -107,10 +127,14 @@ export async function killProcessTree(
 		return;
 	}
 
+	// The Git Bash launcher exits with its shell once the group is gone.
+	const groupSignal = signalProcessGroup(signal, options);
+	if (groupSignal && (await exitedCleanly(groupSignal))) return;
+
 	await new Promise<void>((resolve, reject) => {
 		let killer: ReturnType<Spawn>;
 		try {
-			killer = spawnTaskkill(pid, signal, options.spawn ?? nodeSpawn);
+			killer = spawnTaskkill(pid, options.spawn ?? nodeSpawn);
 		} catch (error) {
 			reject(error);
 			return;
@@ -126,10 +150,31 @@ export async function killProcessTree(
 	});
 }
 
-function spawnTaskkill(pid: number, signal: NodeJS.Signals, spawn: Spawn): ReturnType<Spawn> {
-	const args = ["/PID", String(pid), "/T"];
-	if (signal === "SIGKILL") args.push("/F");
-	return spawn("taskkill", args, { stdio: "ignore", windowsHide: true });
+function signalProcessGroup(signal: NodeJS.Signals, options: KillProcessOptions): ReturnType<Spawn> | undefined {
+	if (!options.processGroupDir) return undefined;
+	let group: number;
+	let shell: string;
+	try {
+		group = Number.parseInt(readFileSync(path.join(options.processGroupDir, "process-group"), "utf8"), 10);
+		shell = options.shell ?? resolveBashShell({ platform: "win32" }).command;
+	} catch {
+		return undefined;
+	}
+	if (!(group > 1)) return undefined;
+	const spawn = options.spawn ?? nodeSpawn;
+	return spawn(shell, ["-c", `kill -s ${signal.replace(/^SIG/, "")} -- -${group}`], { stdio: "ignore", windowsHide: true });
+}
+
+function exitedCleanly(child: ReturnType<Spawn>): Promise<boolean> {
+	return new Promise((resolve) => {
+		child.once("error", () => resolve(false));
+		child.once("close", (code) => resolve(code === 0));
+	});
+}
+
+function spawnTaskkill(pid: number, spawn: Spawn): ReturnType<Spawn> {
+	// Windows cannot ask a console process to exit, so taskkill without /F always refuses them.
+	return spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
 }
 
 function pathCandidates(command: string, env: Env, platform: Platform): string[] {
