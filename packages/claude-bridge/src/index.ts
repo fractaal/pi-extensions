@@ -1756,8 +1756,9 @@ async function consumeQuery(
 	cwd: string,
 	bridgeConfig: Config,
 	isReleased: () => boolean,
-): Promise<{ capturedSessionId?: string }> {
+): Promise<{ capturedSessionId?: string; replied: boolean }> {
 	let capturedSessionId: string | undefined;
+	let replied = false;
 
 	for await (const message of sdkQuery) {
 		// Once released (Stop, a terminal error), the shared context may already
@@ -1765,6 +1766,7 @@ async function consumeQuery(
 		if (isReleased()) break;
 		// A steering message that missed the tool round runs as a follow-up turn
 		// in this same query; keep the input open until none are queued.
+		if (message.type === "result") replied = true;
 		if (message.type === "result" && !(((message as { queued_turn_count?: number }).queued_turn_count ?? 0) > 0)) input.close();
 		const queryCtx = ctx();
 		if (!queryCtx.turnOutput) continue;
@@ -1845,7 +1847,7 @@ async function consumeQuery(
 
 	debug(`consumeQuery: for-await loop exited, released=${isReleased()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 
-	return { capturedSessionId };
+	return { capturedSessionId, replied };
 }
 
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
@@ -2184,7 +2186,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 
 	// Background consumer — runs until query ends
 	consumeQuery(sdkQuery, input, customToolNameToPi, model, cwd, bridgeConfig, () => released)
-		.then(({ capturedSessionId }) => {
+		.then(({ capturedSessionId, replied }) => {
 			debug(`provider: consumeQuery completed, stopReason=${abortCtx.turnOutput?.stopReason}, error=${abortCtx.turnOutput?.errorMessage}, released=${released}`);
 			// Stop or a terminal error already ended the turn.
 			if (released) return;
@@ -2193,6 +2195,9 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 				debug(`provider: tool-result mismatch terminated query; preserving rebuild state`);
 			}
 			assertInitialQuerySucceeded(abortCtx);
+			// Claude Code ends every turn it answers with a result. A process that
+			// exits without one never answered; that is not an empty reply.
+			if (!replied) throw new Error("Claude Code exited without replying.");
 
 			// --- Capture session ID ---
 			const previousSession = bridgeRuntime().sharedSession;

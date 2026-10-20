@@ -8,7 +8,7 @@
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -783,7 +783,116 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		const warnings = bridge.notifications.filter((note) => note.level === "warning").map((note) => note.message);
 		assert.ok(warnings.some((warning) => warning.includes("You've used 75% of your weekly limit")), JSON.stringify(warnings));
 	});
+
+	describe("Claude Code's process", { skip: process.platform === "win32" ? "stand-in executables are shell scripts" : false }, () => {
+		/** An executable script in the work directory. */
+		function script(name, body) {
+			const path = join(workDir, name);
+			writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+			return path;
+		}
+		/** A bin directory whose `claude` is the given script, to put first on the bridge's PATH. */
+		function claudeOnPath(body) {
+			const bin = mkdtempSync(join(workDir, "fake-bin-"));
+			writeFileSync(join(bin, "claude"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+			return { PATH: `${bin}:${process.env.PATH}` };
+		}
+		/**
+		 * Runs `fn` with the host's executable behaving like an Electron app's, as in
+		 * Symphony Desktop: it runs a script only when told to act as Node, and
+		 * otherwise starts the app (which, here, exits without output).
+		 */
+		async function inElectronHost(fn) {
+			const node = process.execPath;
+			process.execPath = script("electron-app", `if [ "$ELECTRON_RUN_AS_NODE" = "1" ]; then exec "${node}" "$@"; fi\nexit 0`);
+			try {
+				return await fn();
+			} finally {
+				process.execPath = node;
+			}
+		}
+
+		it("inside an Electron app, a turn reaches Pi with Claude's answer", async () => {
+			const bridge = newBridge();
+			respond = () => ({ text: "Hello from Claude." });
+
+			const reply = await inElectronHost(() => bridge.call(HAIKU, [user("Say hello.")]));
+
+			assert.equal(textOf(reply), "Hello from Claude.");
+		});
+
+		it("inside an Electron app, Claude Code's environment does not make the Electron apps it starts run as Node", async () => {
+			const envFile = join(workDir, "claude-env.txt");
+			const bridge = newBridge(claudeOnPath(`env > "${envFile}"\nexec "${claudeBinary}" "$@"`));
+			respond = () => ({ text: "ok" });
+
+			const reply = await inElectronHost(() => bridge.call(HAIKU, [user("hello")]));
+
+			assert.equal(textOf(reply), "ok");
+			assert.doesNotMatch(readFileSync(envFile, "utf8"), /^ELECTRON_RUN_AS_NODE=/m);
+		});
+
+		it("Claude Code exiting without replying reaches Pi as an error, not an empty answer", async () => {
+			const bridge = newBridge(claudeOnPath("exit 0"));
+			respond = () => ({ text: "never asked" });
+
+			const reply = await bridge.call(HAIKU, [user("hello")]);
+
+			assert.equal(reply.stopReason, "error");
+			assert.match(reply.errorMessage, /Claude Code exited without replying/);
+		});
+
+		it("if Claude Code's parent process is killed outright while Claude waits on a tool, Claude Code stops instead of calling the API on its own", { skip: process.platform !== "linux" ? "finds Claude Code through /proc" : false }, async () => {
+			const bridge = newBridge();
+			// A model that keeps retrying a tool that never answers, as an agent told to persist does.
+			respond = (_request, index) => ({ toolUse: { id: `toolu_persist_${index}`, name: LOOKUP_SDK_NAME, input: { topic: "sky" } } });
+			await bridge.call(HAIKU, [user("Look it up, and keep trying until it works.")]);
+			const claude = claudeCodeRunningIn(bridge.cwd);
+			const requestsBefore = fakeApi.requests.length;
+
+			process.kill(claude.ppid, "SIGKILL");
+
+			try {
+				await eventually(() => !isRunning(claude.pid), "Claude Code to stop");
+			} finally {
+				if (isRunning(claude.pid)) process.kill(claude.pid, "SIGKILL");
+			}
+			assert.equal(fakeApi.requests.length, requestsBefore, "Claude Code kept calling the API without the bridge");
+		});
+	});
 });
+
+/** The running Claude Code process whose working directory is `cwd`, with its parent's pid. */
+function claudeCodeRunningIn(cwd) {
+	const target = realpathSync(cwd);
+	const binary = realpathSync(claudeBinary);
+	for (const entry of readdirSync("/proc")) {
+		if (!/^\d+$/.test(entry)) continue;
+		try {
+			if (realpathSync(`/proc/${entry}/exe`) !== binary || realpathSync(`/proc/${entry}/cwd`) !== target) continue;
+			const pid = Number(entry);
+			if (!isRunning(pid)) continue;
+			return { pid, ppid: Number(procStat(pid)[1]) };
+		} catch {
+			// The process exited while being read.
+		}
+	}
+	assert.fail(`no running Claude Code process in ${cwd}`);
+}
+
+/** Fields of /proc/<pid>/stat after the command name, starting with the state. */
+function procStat(pid) {
+	const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+	return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+}
+
+function isRunning(pid) {
+	try {
+		return procStat(pid)[0] !== "Z";
+	} catch {
+		return false;
+	}
+}
 
 describe("rate-limit reset time", () => {
 	it("reads the SDK's Unix-seconds reset time as a present-day date", () => {
