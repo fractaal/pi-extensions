@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.2
+
+- Claude works again in Electron hosts such as Symphony Desktop. Since 2.1.0 the bridge starts Claude Code through a small supervisor run on the host's own executable; in an Electron app that executable is the app, so every turn opened a second app and ended with no reply. The supervisor now runs as Node there.
+- Claude Code exiting without replying ends the turn with an error ("Claude Code exited without replying.") instead of an empty answer.
+- If the supervisor itself is killed outright (the out-of-memory killer, `kill -9`), Claude Code now stops along with the processes it started. Before, it carried on with the turn and kept calling the API with nothing receiving the replies.
+
 ## 4.0.1
 
 - The usage-credits helper runs Claude Code's `/usage-credits`. Claude Code renamed `/extra-usage`, which now only survives as a hidden alias.
