@@ -50,8 +50,11 @@ export function resolveBashShell(options: ShellResolutionOptions = {}): BashShel
 }
 
 export function windowsBashCandidates(env: Env = process.env): string[] {
+	// System32\bash.exe is WSL's launcher: it runs commands inside Linux, without the Windows
+	// environment, and loses their output when spawned detached. It only works when chosen explicitly.
+	const wslLauncher = path.win32.join(getEnv(env, "SystemRoot") || "C:\\Windows", "System32", "bash.exe").toLowerCase();
 	return uniqueStrings([
-		...pathCandidates("bash.exe", env, "win32"),
+		...pathCandidates("bash.exe", env, "win32").filter((candidate) => candidate.toLowerCase() !== wslLauncher),
 		...(getEnv(env, "ProgramFiles") ? [path.win32.join(getEnv(env, "ProgramFiles") ?? "", "Git", "bin", "bash.exe")] : []),
 		...(getEnv(env, "ProgramFiles") ? [path.win32.join(getEnv(env, "ProgramFiles") ?? "", "Git", "usr", "bin", "bash.exe")] : []),
 		...(getEnv(env, "ProgramFiles(x86)")

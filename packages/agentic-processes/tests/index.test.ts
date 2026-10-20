@@ -130,6 +130,17 @@ describe("shell resolution and process termination", () => {
 		).toEqual({ command: bashPath, args: ["-lc"] });
 	});
 
+	it("prefers Git Bash over WSL's System32 bash.exe launcher on PATH", () => {
+		const wslBash = String.raw`C:\WINDOWS\system32\bash.exe`;
+		const gitBash = String.raw`C:\Program Files\Git\bin\bash.exe`;
+		const env = { Path: String.raw`C:\WINDOWS\system32\;C:\Program Files\Git\cmd`, ProgramFiles: String.raw`C:\Program Files`, SystemRoot: String.raw`C:\WINDOWS` };
+		expect(resolveBashShell({ platform: "win32", env, existsSync: existsOnly([wslBash, gitBash]) })).toEqual({ command: gitBash, args: ["-lc"] });
+		expect(() => resolveBashShell({ platform: "win32", env, existsSync: existsOnly([wslBash]) })).toThrow(/Install Git for Windows/);
+		expect(
+			resolveBashShell({ platform: "win32", env: { ARIA_LOCAL_BASH_PATH: wslBash }, existsSync: existsOnly([wslBash]) }),
+		).toEqual({ command: wslBash, args: ["-lc"] });
+	});
+
 	it("fails with an actionable Windows Bash setup message when no Bash is available", () => {
 		expect(() =>
 			resolveBashShell({
