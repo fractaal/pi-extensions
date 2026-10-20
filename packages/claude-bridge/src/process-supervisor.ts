@@ -110,10 +110,16 @@ export function supervisorEnvironment(
 ): NodeJS.ProcessEnv {
 	return {
 		...env,
+		// The supervisor runs on the host's own executable. In an Electron host
+		// (Symphony Desktop) that is the app, which starts a second app instead of
+		// running the script unless told to act as Node. Node and Bun ignore it.
+		ELECTRON_RUN_AS_NODE: "1",
 		CLAUDE_BRIDGE_PARENT_PID: String(process.pid),
 		CLAUDE_BRIDGE_CHILD_COMMAND: command,
 		CLAUDE_BRIDGE_CHILD_ARGS_JSON: JSON.stringify(args),
-		CLAUDE_BRIDGE_CHILD_ENV_JSON: JSON.stringify(env),
+		// Claude Code is a Bun binary. Bun's no-orphans mode stops it, and the
+		// processes it started, if the supervisor itself is killed outright.
+		CLAUDE_BRIDGE_CHILD_ENV_JSON: JSON.stringify({ ...env, BUN_FEATURE_FLAG_NO_ORPHANS: "1" }),
 		...(cwd ? { CLAUDE_BRIDGE_CHILD_CWD: cwd } : {}),
 	};
 }

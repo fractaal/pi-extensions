@@ -39,6 +39,14 @@ Implementation details for contributors. End-user setup, settings, and troublesh
 - The bridge puts no time limit on a turn. Claude Code handles slow and stalled API responses itself: it has its own first-byte and stream-idle timeouts, retries, and reports each retry as an `api_retry` system message. A long silence before the first output is normal with a large context or high effort. The bridge cannot tell such a silence from a failure, so Claude Code's own errors, or the user's Stop, end the turn.
 - `tests/unit-claude-code-contract.mjs` runs the real bundled Claude Code binary against a scripted fake Anthropic API (`tests/lib/fake-anthropic.mjs`) and checks what Pi and the API receive.
 
+## Claude Code's process
+
+- Claude Code runs under a small Node supervisor (`src/process-supervisor.ts`) that stops it, with its process group, when the bridge host disappears. A Claude Code left without its host keeps calling the API: each tool call fails at once and the model retries. Node cannot give a child a parent-death signal, hence the supervisor.
+- The supervisor runs on the host's own executable with `ELECTRON_RUN_AS_NODE=1`. In an Electron host such as Symphony Desktop that executable is the app, and without the variable every turn starts a second app instead of Claude Code. Claude Code's own environment does not carry the variable, so Electron apps it starts run normally.
+- Claude Code gets `BUN_FEATURE_FLAG_NO_ORPHANS=1`, the Bun runtime's no-orphans mode: it exits, stopping the processes it started, when its parent dies. This covers the supervisor itself being killed outright. Bun processes Claude Code starts inherit the mode.
+- A query that ends without Claude Code's result message is an error, not an empty reply.
+- `tests/unit-claude-code-contract.mjs` ("Claude Code's process") checks these against the real binary, with a stand-in for an Electron app's executable.
+
 ## Executable resolution
 
 - `src/executable-resolution.ts` is the sole resolver for bridge execution and programmatic hosts. Import it through `@fractaal/pi-claude-bridge/executable-resolution` instead of copying PATH logic.
