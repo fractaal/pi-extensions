@@ -95,7 +95,7 @@ export function killChildProcessTree(
 	const platform = options.platform ?? process.platform;
 	if (platform === "win32") {
 		signalProcessGroup(signal, options)?.on("error", () => undefined);
-		const killer = spawnTaskkill(child.pid, signal, options.spawn ?? nodeSpawn);
+		const killer = spawnTaskkill(child.pid, options.spawn ?? nodeSpawn);
 		killer.on("error", () => {
 			try {
 				child.kill(signal);
@@ -134,7 +134,7 @@ export async function killProcessTree(
 	await new Promise<void>((resolve, reject) => {
 		let killer: ReturnType<Spawn>;
 		try {
-			killer = spawnTaskkill(pid, signal, options.spawn ?? nodeSpawn);
+			killer = spawnTaskkill(pid, options.spawn ?? nodeSpawn);
 		} catch (error) {
 			reject(error);
 			return;
@@ -172,10 +172,9 @@ function exitedCleanly(child: ReturnType<Spawn>): Promise<boolean> {
 	});
 }
 
-function spawnTaskkill(pid: number, signal: NodeJS.Signals, spawn: Spawn): ReturnType<Spawn> {
-	const args = ["/PID", String(pid), "/T"];
-	if (signal === "SIGKILL") args.push("/F");
-	return spawn("taskkill", args, { stdio: "ignore", windowsHide: true });
+function spawnTaskkill(pid: number, spawn: Spawn): ReturnType<Spawn> {
+	// Windows cannot ask a console process to exit, so taskkill without /F always refuses them.
+	return spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
 }
 
 function pathCandidates(command: string, env: Env, platform: Platform): string[] {

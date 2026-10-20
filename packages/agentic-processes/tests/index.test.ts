@@ -234,7 +234,7 @@ describe("shell resolution and process termination", () => {
 
 		calls.length = 0;
 		processes.length = 0;
-		const fallback = killProcessTree(1234, "SIGKILL", options);
+		const fallback = killProcessTree(1234, "SIGTERM", options);
 		processes[0]?.emit("close", 1);
 		await vi.waitFor(() => expect(calls[1]).toEqual(["taskkill", "/PID", "1234", "/T", "/F"]));
 		processes[1]?.emit("close", 0);
