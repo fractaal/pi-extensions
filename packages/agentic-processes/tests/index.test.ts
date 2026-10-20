@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -811,6 +811,51 @@ describe("agentic processes extension", () => {
 		);
 		expect(text(killed)).toContain(`Task ${runningTaskId}`);
 		expect(events.emits.some((event) => event.name === "aria-local:background-task-update")).toBe(true);
+	});
+
+	it("stopping a command also stops the processes it started", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		const bashManager = createBashTaskManager(apiMock.api);
+		const monitorManager = createMonitorManager(apiMock.api);
+		// Record the backgrounded child's OS pid (Git Bash exposes it as /proc/<pid>/winpid on Windows).
+		const startsChild = (name: string) =>
+			`sleep 300 & c=$!; { cat /proc/$c/winpid 2>/dev/null || echo $c; } > ${name}; wait`;
+		const childPid = async (name: string) => {
+			await vi.waitFor(async () => expect((await stat(join(cwd, name))).size).toBeGreaterThan(0));
+			return Number((await readFile(join(cwd, name), "utf8")).trim());
+		};
+		const isRunning = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
+		const killed = await bashManager.start({ command: startsChild("killed"), cwd, backgroundAfterSeconds: 0.01 });
+		const killedChild = await childPid("killed");
+		await bashManager.stop(killed.taskId, "test");
+
+		const timedOut = await bashManager.start({
+			command: startsChild("timed-out"),
+			cwd,
+			backgroundAfterSeconds: 0.01,
+			killAfterSeconds: 1,
+		});
+		const timedOutChild = await childPid("timed-out");
+		await vi.waitFor(() => expect(bashManager.get(timedOut.taskId)?.status).toBe("killed"), { timeout: 5000 });
+
+		const monitorId = monitorIdFrom(await monitorManager.start({ command: startsChild("monitor"), inject: false }, cwd));
+		const monitorChild = await childPid("monitor");
+		await monitorManager.stop({ id: monitorId });
+
+		await vi.waitFor(
+			() => expect([killedChild, timedOutChild, monitorChild].filter(isRunning)).toEqual([]),
+			{ timeout: 5000 },
+		);
 	});
 
 	it("sends background completion with steering delivery", async () => {
