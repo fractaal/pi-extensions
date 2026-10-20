@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, open, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -15,7 +15,13 @@ import agenticProcessesExtension, {
 	requestAgenticProcessManagementApi,
 } from "../src/index.ts";
 import { createMonitorManager } from "../src/monitor.ts";
-import { killChildProcessTree, killProcessTree, resolveBashShell, windowsBashCandidates } from "../src/shell.ts";
+import {
+	killChildProcessTree,
+	killProcessTree,
+	recordProcessGroup,
+	resolveBashShell,
+	windowsBashCandidates,
+} from "../src/shell.ts";
 import { emitToSubscribers } from "../src/subscribers.ts";
 
 type TextToolResult = {
@@ -198,6 +204,46 @@ describe("shell resolution and process termination", () => {
 
 		killer.emit("close", 1);
 		await expect(dispatched).rejects.toThrow("taskkill exited with code 1");
+	});
+
+	it("records the MSYS process group only on Windows, without ever writing to command output", () => {
+		const taskDir = String.raw`C:\Users\O'Neil\AppData\Local\Temp\task`;
+		expect(recordProcessGroup("echo hi", taskDir, "win32")).toBe(
+			`printf '%s' "$$" 2>/dev/null > 'C:/Users/O'\\''Neil/AppData/Local/Temp/task/process-group'\necho hi`,
+		);
+		expect(recordProcessGroup("echo hi", "/tmp/task", "linux")).toBe("echo hi");
+	});
+
+	it("stops a Windows Git Bash command by its recorded process group, falling back to taskkill", async () => {
+		const taskDir = await mkdtemp(join(tmpdir(), "agentic-processes-group-"));
+		await writeFile(join(taskDir, "process-group"), "1726");
+		const calls: string[][] = [];
+		const processes: EventEmitter[] = [];
+		const fakeSpawn = ((command: string, args: string[]) => {
+			calls.push([command, ...args]);
+			const process = new EventEmitter();
+			processes.push(process);
+			return process;
+		}) as never;
+		const options = { platform: "win32" as const, spawn: fakeSpawn, shell: "bash.exe", processGroupDir: taskDir };
+
+		const stopped = killProcessTree(1234, "SIGTERM", options);
+		processes[0]?.emit("close", 0);
+		await expect(stopped).resolves.toBeUndefined();
+		expect(calls).toEqual([["bash.exe", "-c", "kill -s TERM -- -1726"]]);
+
+		calls.length = 0;
+		processes.length = 0;
+		const fallback = killProcessTree(1234, "SIGKILL", options);
+		processes[0]?.emit("close", 1);
+		await vi.waitFor(() => expect(calls[1]).toEqual(["taskkill", "/PID", "1234", "/T", "/F"]));
+		processes[1]?.emit("close", 0);
+		await expect(fallback).resolves.toBeUndefined();
+
+		calls.length = 0;
+		killChildProcessTree({ pid: 4321, kill: vi.fn() }, "SIGKILL", { ...options, processGroupDir: join(taskDir, "missing") });
+		expect(calls).toEqual([["taskkill", "/PID", "4321", "/T", "/F"]]);
+		await rm(taskDir, { recursive: true, force: true });
 	});
 
 	it("falls back to ChildProcess.kill if Windows taskkill cannot start", () => {

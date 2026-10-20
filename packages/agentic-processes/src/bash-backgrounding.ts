@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentToolUpdateCallback, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { killChildProcessTree, resolveBashShell } from "./shell.ts";
+import { killChildProcessTree, recordProcessGroup, resolveBashShell } from "./shell.ts";
 import { emitToSubscribers } from "./subscribers.ts";
 
 const FOREGROUND_BUDGET_MS = 60_000;
@@ -232,15 +232,15 @@ function scheduleUpdate(
 	}, delay);
 }
 
-function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGKILL"): void {
-	killChildProcessTree(child, signal);
+function killProcessGroup(child: ChildProcess, outputDir: string, signal: NodeJS.Signals = "SIGKILL"): void {
+	killChildProcessTree(child, signal, { processGroupDir: outputDir });
 }
 
 function requestKill(pi: ExtensionAPI, store: BashTaskStore, task: TaskRecord, reason: string): void {
 	if (task.status !== "running") return;
 	task.reason = reason;
 	task.updatedAt = Date.now();
-	killProcessGroup(task.child);
+	killProcessGroup(task.child, path.dirname(task.outputPath));
 	const timer = setTimeout(() => {
 		if (task.completionSettled) return;
 		task.child.stdout?.destroy();
@@ -368,7 +368,7 @@ async function spawnTask(
 	const outputPath = path.join(outputDir, "output.log");
 	let child: ChildProcess;
 	try {
-		child = spawn(shell.command, [...shell.args, wrappedCommand], {
+		child = spawn(shell.command, [...shell.args, recordProcessGroup(wrappedCommand, outputDir)], {
 			cwd: spawnContext.cwd,
 			detached: true,
 			env: spawnContext.env,
@@ -383,7 +383,7 @@ async function spawnTask(
 	try {
 		stream = createWriteStream(outputPath, { flags: "a" });
 	} catch (error) {
-		killProcessGroup(child);
+		killProcessGroup(child, outputDir);
 		await removeTaskOutputDir(store, taskId);
 		throw error;
 	}

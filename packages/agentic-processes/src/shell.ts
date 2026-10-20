@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
-import { existsSync as nodeExistsSync } from "node:fs";
+import { existsSync as nodeExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 export interface BashShellSpec {
@@ -21,6 +21,22 @@ export interface ShellResolutionOptions {
 export interface KillProcessOptions {
 	platform?: Platform;
 	spawn?: Spawn;
+	/** Task directory where a Windows Git Bash recorded its MSYS process group; see recordProcessGroup. */
+	processGroupDir?: string;
+	/** Bash that signals the recorded process group. Defaults to resolveBashShell(). */
+	shell?: string;
+}
+
+/**
+ * Git Bash emulates fork/exec, so on Windows a command's processes are not descendants of the
+ * spawned bash in the Windows process tree and `taskkill /T` cannot reach them. There the shell
+ * records its MSYS pid, which leads its own process group, so kills can signal the whole group
+ * the way POSIX hosts signal -pgid.
+ */
+export function recordProcessGroup(command: string, taskDir: string, platform: Platform = process.platform): string {
+	if (platform !== "win32") return command;
+	const file = path.win32.join(taskDir, "process-group").replace(/\\/g, "/").replace(/'/g, `'\\''`);
+	return `printf '%s' "$$" 2>/dev/null > '${file}'\n${command}`;
 }
 
 export function resolveBashShell(options: ShellResolutionOptions = {}): BashShellSpec {
@@ -78,6 +94,7 @@ export function killChildProcessTree(
 	if (!child.pid) return;
 	const platform = options.platform ?? process.platform;
 	if (platform === "win32") {
+		signalProcessGroup(signal, options)?.on("error", () => undefined);
 		const killer = spawnTaskkill(child.pid, signal, options.spawn ?? nodeSpawn);
 		killer.on("error", () => {
 			try {
@@ -110,6 +127,10 @@ export async function killProcessTree(
 		return;
 	}
 
+	// The Git Bash launcher exits with its shell once the group is gone.
+	const groupSignal = signalProcessGroup(signal, options);
+	if (groupSignal && (await exitedCleanly(groupSignal))) return;
+
 	await new Promise<void>((resolve, reject) => {
 		let killer: ReturnType<Spawn>;
 		try {
@@ -126,6 +147,28 @@ export async function killProcessTree(
 			}
 			reject(new Error(`taskkill exited with code ${code ?? "null"}.`));
 		});
+	});
+}
+
+function signalProcessGroup(signal: NodeJS.Signals, options: KillProcessOptions): ReturnType<Spawn> | undefined {
+	if (!options.processGroupDir) return undefined;
+	let group: number;
+	let shell: string;
+	try {
+		group = Number.parseInt(readFileSync(path.join(options.processGroupDir, "process-group"), "utf8"), 10);
+		shell = options.shell ?? resolveBashShell({ platform: "win32" }).command;
+	} catch {
+		return undefined;
+	}
+	if (!(group > 1)) return undefined;
+	const spawn = options.spawn ?? nodeSpawn;
+	return spawn(shell, ["-c", `kill -s ${signal.replace(/^SIG/, "")} -- -${group}`], { stdio: "ignore", windowsHide: true });
+}
+
+function exitedCleanly(child: ReturnType<Spawn>): Promise<boolean> {
+	return new Promise((resolve) => {
+		child.once("error", () => resolve(false));
+		child.once("close", (code) => resolve(code === 0));
 	});
 }
 

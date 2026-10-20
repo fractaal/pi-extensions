@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { killProcessTree, resolveBashShell } from "./shell.ts";
+import { killProcessTree, recordProcessGroup, resolveBashShell } from "./shell.ts";
 import { emitToSubscribers } from "./subscribers.ts";
 
 const DEFAULT_BATCH_MS = 1000;
@@ -633,7 +633,9 @@ async function stopMonitor(
 		throw error;
 	}
 
-	const dispatch = killProcessTree(monitor.process.pid, signal as NodeJS.Signals)
+	const dispatch = killProcessTree(monitor.process.pid, signal as NodeJS.Signals, {
+		processGroupDir: monitor.logDir,
+	})
 		.then(() => {
 			monitor.stopRequested = true;
 			monitor.stopReason = reason;
@@ -823,7 +825,9 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 					continue;
 				}
 				if (monitor.stopRequested) continue;
-				const dispatch = killProcessTree(monitor.process.pid, "SIGTERM")
+				const dispatch = killProcessTree(monitor.process.pid, "SIGTERM", {
+					processGroupDir: monitor.logDir,
+				})
 					.then(() => {
 						monitor.stopRequested = true;
 						monitor.stopReason = "Pi session shutdown";
@@ -853,7 +857,7 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			const logs = createMonitorLogFiles(id);
 			let child: ChildProcessWithoutNullStreams;
 			try {
-				child = spawn(shell.command, [...shell.args, String(params.command)], {
+				child = spawn(shell.command, [...shell.args, recordProcessGroup(String(params.command), logs.logDir)], {
 					cwd,
 					detached: true,
 					env: process.env,
