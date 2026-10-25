@@ -515,18 +515,81 @@ describe("Claude Code contract", { timeout: 60_000, skip: claudeBinary ? false :
 		for (const name of ["tool_search", "codemode", "hidden_one"]) assert.equal(everything.includes(sdk(name)), false, `${name} must not reach Claude`);
 	});
 
-	it("Pi's system prompt reaches Claude in pi mode", async () => {
+	it("Pi-owned prompts update on resumed turns while unchanged prompts and conversation history stay stable", async () => {
 		const userDir = join(workDir, "user");
 		mkdirSync(userDir, { recursive: true });
 		writeFileSync(join(userDir, "claude-bridge.json"), JSON.stringify({ provider: { systemPromptMode: "pi" } }));
 		try {
 			const bridge = newBridge();
 			const start = fakeApi.requests.length;
-			respond = () => ({ text: "ok" });
-			await bridge.call(HAIKU, [user("hi")], { systemPrompt: "You are PiPromptMarker-7731, Pi's own prompt." });
-			const system = JSON.stringify(fakeApi.requests[start].body.system);
-			assert.match(system, /PiPromptMarker-7731/);
+			respond = () => ({ text: "Claude's actual response." });
+			const original = "You are PiPromptMarker-7731. Follow the original owner directive.";
+			const updated = "You are PiPromptMarker-7731. Follow the updated owner directive.";
+			const history = [user("first")];
+			await bridge.call(HAIKU, history, { systemPrompt: original });
+			// The native conversation must be resumed, not rebuilt from this alternate copy.
+			history.push(assistantReply("Pi copy must not replace the native response."), user("second"));
+			await bridge.call(HAIKU, history, { systemPrompt: original });
+			assert.deepEqual(fakeApi.requests[start + 1].body.system, fakeApi.requests[start].body.system);
+			history.push(assistantReply("Pi copy must not replace the native response."), user("third"));
+			await bridge.call(HAIKU, history, { systemPrompt: updated });
+			const request = fakeApi.requests.at(-1);
+			const system = JSON.stringify(request.body.system);
+			assert.ok(system.includes(updated), "Claude must receive the current Pi-owned prompt");
+			assert.equal(system.includes(original), false, "the old snapshot must not override it");
 			assert.doesNotMatch(system, /Claude Code, Anthropic's official CLI/);
+			const sent = request.messages.map((message) => visibleParts(message).join("|"));
+			assert.deepEqual(sent, ["first", "Claude's actual response.", "second", "Claude's actual response.", "third"]);
+			assert.equal(hasFakeReply(request), false);
+		} finally {
+			rmSync(join(userDir, "claude-bridge.json"), { force: true });
+		}
+	});
+
+	it("Pi-owned prompts keep the request prefix stable while Claude searches and calls a deferred tool", async () => {
+		const userDir = join(workDir, "user");
+		mkdirSync(userDir, { recursive: true });
+		writeFileSync(join(userDir, "claude-bridge.json"), JSON.stringify({ provider: { systemPromptMode: "pi" } }));
+		try {
+			const bridge = newBridge(TOOL_SEARCH);
+			const start = fakeApi.requests.length;
+			respond = (_request, index) => {
+				if (index === start) return { toolUse: { id: "toolu_prompt_search", name: "ToolSearch", input: { query: `select:${APPLY_SDK_NAME}`, max_results: 1 } } };
+				if (index === start + 1) return { toolUse: { id: "toolu_prompt_apply", name: APPLY_SDK_NAME, input: { change: { operation: "delete_grant", grant_id: "g1" } } } };
+				return { text: "Finished the tool turn." };
+			};
+			const options = { systemPrompt: "Pi-owned stable instructions." };
+			const history = [user("Find and apply the change.")];
+			const toolTurn = await bridge.call(HAIKU, history, { ...options, tools: [LOOKUP_TOOL], registered: [DEFERRED_APPLY] });
+			const [call] = toolCallsOf(toolTurn);
+			assert.equal(call.name, APPLY_TOOL.name);
+			history.push(toolTurn, bridge.runTool(call));
+			assert.equal(textOf(await bridge.call(HAIKU, history, options)), "Finished the tool turn.");
+			for (const request of fakeApi.requests.slice(start + 1)) {
+				assert.deepEqual(request.body.system, fakeApi.requests[start].body.system);
+				// Cache breakpoints move to the latest turn; the earlier prompt tokens must not.
+				assert.deepEqual(request.messages.slice(0, fakeApi.requests[start].messages.length), fakeApi.requests[start].messages);
+				assert.equal(hasFakeReply(request), false);
+			}
+		} finally {
+			rmSync(join(userDir, "claude-bridge.json"), { force: true });
+		}
+	});
+
+	it("Pi prompt mode takes over an existing Claude prompt snapshot without replacing conversation history", async () => {
+		const userDir = join(workDir, "user");
+		mkdirSync(userDir, { recursive: true });
+		const bridge = newBridge();
+		respond = () => ({ text: "The native conversation is retained." });
+		const history = [user("Start with the Claude preset.")];
+		await bridge.call(HAIKU, history);
+		writeFileSync(join(userDir, "claude-bridge.json"), JSON.stringify({ provider: { systemPromptMode: "pi" } }));
+		try {
+			history.push(assistantReply("Do not rebuild from this copy."), user("Now use Pi's current instructions."));
+			await bridge.call(HAIKU, history, { systemPrompt: "Pi now owns the live instructions." });
+			const request = fakeApi.requests.at(-1);
+			assert.ok(JSON.stringify(request.body.system).includes("Pi now owns the live instructions."));
+			assert.deepEqual(request.messages.map((message) => visibleParts(message).join("|")), ["Start with the Claude preset.", "The native conversation is retained.", "Now use Pi's current instructions."]);
 		} finally {
 			rmSync(join(userDir, "claude-bridge.json"), { force: true });
 		}

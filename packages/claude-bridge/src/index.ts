@@ -2094,7 +2094,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		...(fallbackModel ? { fallbackModel } : {}),
 		...(providerSettings.fastMode ? { settings: { fastMode: true } } : {}),
 		systemPrompt: systemPromptMode === "pi"
-			? piSystemPrompt
+			? { type: "custom", prompt: piSystemPrompt, snapshot: false }
 			: {
 				type: "preset", preset: "claude_code",
 				append: systemPromptAppend ? systemPromptAppend : undefined,

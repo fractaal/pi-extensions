@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.0.3
+
+- Pi-owned prompts now update in resumed Claude conversations. The bridge opts out of Claude Code's default system-prompt snapshot in `pi` mode, so changed owner directives and runtime instructions are no longer silently ignored until compaction. Unchanged prompts remain stable, conversation history still resumes normally, and Claude Code prompt mode is unchanged.
+
 ## 4.0.2
 
 - Claude works again in Electron hosts such as Symphony Desktop. Since 2.1.0 the bridge starts Claude Code through a small supervisor run on the host's own executable; in an Electron app that executable is the app, so every turn opened a second app and ended with no reply. The supervisor now runs as Node there.

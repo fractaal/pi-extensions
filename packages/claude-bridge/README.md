@@ -49,7 +49,7 @@ Embedding hosts use Pi's refresh lifecycle and publish the resulting registry ch
 `systemPromptMode` has two modes:
 
 - `claude-code` (default): use Claude Code's preset prompt and optionally append selected Pi context.
-- `pi`: pass Pi's complete system prompt through unchanged and disable Claude filesystem setting sources, avoiding duplicate instructions and MCP discovery.
+- `pi`: pass Pi's current complete system prompt through unchanged and disable Claude filesystem setting sources, avoiding duplicate instructions and MCP discovery. Claude Code's prompt snapshot is disabled in this mode so changed Pi instructions reach resumed turns, rather than waiting for compaction. An unchanged prompt remains cacheable; a real prompt change can invalidate the cached prefix and earlier thinking. Conversation history is still resumed, not rebuilt.
 
 The bridge only provides this mechanism. Pi installations and embedding hosts choose the mode through normal package settings.
 
