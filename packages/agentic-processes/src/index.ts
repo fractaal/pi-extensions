@@ -190,7 +190,8 @@ export interface AgenticProcessesExtensionOptions {
 export function createAgenticProcessesExtension(options: AgenticProcessesExtensionOptions = {}) {
 	return function agenticProcessesExtension(pi: ExtensionAPI): void {
 		const bash = registerBashBackgrounding(pi, options.bash);
-		const monitors = registerMonitorExtension(pi);
+		// Monitors run Bash too, so they go through the same spawn hook.
+		const monitors = registerMonitorExtension(pi, { spawnHook: options.bash?.spawnHook });
 		const management = createManagementApi(bash, monitors);
 		const unsubscribeRequest = pi.events?.on?.(AGENTIC_PROCESS_MANAGEMENT_API_REQUEST, (data) => {
 			const request = data as Partial<ManagementApiRequest>;
@@ -220,5 +221,5 @@ export {
 	createBashTaskManager,
 	default as bashBackgroundingExtension,
 } from "./bash-backgrounding.ts";
-export type { MonitorManager, MonitorSnapshot, MonitorUpdateListener } from "./monitor.ts";
+export type { MonitorManager, MonitorManagerOptions, MonitorSnapshot, MonitorUpdateListener } from "./monitor.ts";
 export { createMonitorManager, default as monitorExtension } from "./monitor.ts";
