@@ -1009,6 +1009,39 @@ describe("agentic processes extension", () => {
 		});
 	});
 
+	it("runs monitor commands through the Bash spawn hook", async () => {
+		const cwd = await tempCwd();
+		const apiMock = createExtensionApiMock();
+		installEventBus(apiMock);
+		vi.stubEnv("ARIA_TEST_RUNTIME_ONLY", "secret");
+		createAgenticProcessesExtension({
+			bash: {
+				spawnHook: (context) => {
+					const env: NodeJS.ProcessEnv = { ...context.env, ARIA_TEST_FACTORY: "monitor-ready" };
+					delete env.ARIA_TEST_RUNTIME_ONLY;
+					return { ...context, env };
+				},
+			},
+		})(apiMock.api);
+		const start = apiMock.getTool("monitor_start").execute;
+		if (!start) throw new Error("monitor_start execute missing");
+
+		const started = await start(
+			"call-monitor",
+			{ command: "printf '%s:%s\\n' \"$ARIA_TEST_FACTORY\" \"${ARIA_TEST_RUNTIME_ONLY:-unset}\"", inject: false },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const status = apiMock.getTool("monitor_status").execute;
+		if (!status) throw new Error("monitor_status execute missing");
+		await vi.waitFor(async () => {
+			const result = await status("call-status", { id: monitorIdFrom(started) }, undefined, undefined, ctx(cwd));
+			expect(text(result)).toContain("monitor-ready:unset");
+		});
+		await Promise.all(apiMock.getHandlers("session_shutdown").map(async (handler) => handler({}, ctx(cwd))));
+	});
+
 	it("removes monitor logs from system temp on shutdown", async () => {
 		const cwd = await tempCwd();
 		const apiMock = createExtensionApiMock();

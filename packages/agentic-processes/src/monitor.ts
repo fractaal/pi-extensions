@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { BashTaskSpawnHook } from "./bash-backgrounding.ts";
 import { killProcessTree, recordProcessGroup, resolveBashShell } from "./shell.ts";
 import { emitToSubscribers } from "./subscribers.ts";
 
@@ -755,7 +756,12 @@ function publishAriaLocalMonitor(pi: ExtensionAPI, snapshot: MonitorSnapshot): v
 	});
 }
 
-export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
+export interface MonitorManagerOptions {
+	/** The same hook Bash tasks use, so a monitor's command gets the same environment. */
+	spawnHook?: BashTaskSpawnHook;
+}
+
+export function createMonitorManager(pi: ExtensionAPI, managerOptions: MonitorManagerOptions = {}): MonitorManager {
 	const monitors = new Map<string, Monitor>();
 	const subscribers = new Set<MonitorUpdateListener>();
 	let latestStatusCtx: StatusUiContext | undefined;
@@ -852,15 +858,18 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 			if (shutdownPromise) throw new Error("Cannot start a monitor while the manager is shutting down.");
 			rememberUi(statusCtx);
 			const id = randomUUID().slice(0, 8);
-			const cwd = resolveCwd(baseCwd, params.cwd);
+			const requested = { command: String(params.command), cwd: resolveCwd(baseCwd, params.cwd), env: { ...process.env } };
+			const spawnContext = managerOptions.spawnHook ? await managerOptions.spawnHook(requested) : requested;
+			if (shutdownPromise) throw new Error("Cannot start a monitor while the manager is shutting down.");
+			const cwd = spawnContext.cwd;
 			const shell = resolveBashShell();
 			const logs = createMonitorLogFiles(id);
 			let child: ChildProcessWithoutNullStreams;
 			try {
-				child = spawn(shell.command, [...shell.args, recordProcessGroup(String(params.command), logs.logDir)], {
+				child = spawn(shell.command, [...shell.args, recordProcessGroup(spawnContext.command, logs.logDir)], {
 					cwd,
 					detached: true,
-					env: process.env,
+					env: spawnContext.env,
 					stdio: ["ignore", "pipe", "pipe"],
 				}) as ChildProcessWithoutNullStreams;
 			} catch (error) {
@@ -1110,8 +1119,8 @@ export function createMonitorManager(pi: ExtensionAPI): MonitorManager {
 	};
 }
 
-export function registerMonitorExtension(pi: ExtensionAPI): MonitorManager {
-	const manager = createMonitorManager(pi);
+export function registerMonitorExtension(pi: ExtensionAPI, options: MonitorManagerOptions = {}): MonitorManager {
+	const manager = createMonitorManager(pi, options);
 	const unsubscribeAriaLocalUpdates = manager.subscribe((snapshot) => publishAriaLocalMonitor(pi, snapshot));
 
 	pi.on("session_shutdown", async (_event, ctx) => {
