@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { reviewVerdict, runGoalCompletionAuditor } from "./goal-auditor.ts";
 import {
 	GOAL_AUDIT_REJECTION_REPORT_MAX_LENGTH,
