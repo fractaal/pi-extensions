@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# pkill / pgrep shim (pgrep forwards to this file, or is a symlink to it). An agent harness puts
+# this directory first on PATH for shell calls whose command text mentions
+# pkill or pgrep, and sets PKILL_SELF_SAFE_ROOT to its own PID (Claude Code's
+# $CLAUDE_PID works too). It guards against two ways an agent's pattern kill
+# goes wrong:
+#
+# 1. Killing its own call. Harnesses run each call as one shell whose argv
+#    holds the command text (Pi: `bash -lc <command>`; Claude Code:
+#    `zsh -c '... eval <command> ...'`), so `pkill -f <pattern>` written in the
+#    command matches the shell running it and kills the call (exit 143 or 144);
+#    `kill $(pgrep -f ...)` too. Both tools leave out exactly that call's own
+#    processes, the ancestors between us and the harness, by being given a
+#    `-p` list of every other PID. (`--ignore-ancestors` would also hide the
+#    harness, tmux and Hyprland, and agents check `pgrep -x Hyprland`.)
+#
+# 2. Killing everything else. On 2026-11-09 a stray `pkill -f "x"` sent
+#    SIGTERM to every process with an x in its argv: tmux and every agent in
+#    it, dbus, the portals, browsers. pkill here only signals processes in the
+#    harness's own cgroup (its tmux pane's scope, which keeps everything the
+#    session started, even re-parented daemons) and reports matches it left
+#    alone. Explicit PIDs (-p, -F) still work anywhere; `pkill -v` is refused.
+#
+# pgrep is only ever narrowed by (1): listing processes stays truthful.
+# Notes for the agent go to stderr and, under $PKILL_SELF_SAFE_ID (the tool
+# call's ID), to a file the harness turns into context after the call.
+name=${PKILL_SELF_SAFE_AS:-${0##*/}}
+unset PKILL_SELF_SAFE_AS
+real=/usr/bin/$name
+
+# Outside an agent's tool call there is no boundary to stop at.
+root=${PKILL_SELF_SAFE_ROOT:-$CLAUDE_PID}
+[[ $root =~ ^[0-9]+$ ]] || exec "$real" "$@"
+
+note() {  # fields joined by tabs; the first names the kind of note
+  [[ $PKILL_SELF_SAFE_ID =~ ^[A-Za-z0-9_-]+$ ]] || return 0
+  local dir=${XDG_RUNTIME_DIR:-/tmp}/pkill-self-safe
+  mkdir -p "$dir" && (IFS=$'\t'; printf '%.600s\n' "$*") >> "$dir/$PKILL_SELF_SAFE_ID"
+}
+
+explicit= invert= threads=
+for arg in "$@"; do
+  [[ $arg == -- ]] && break
+  [[ $arg == -[!-]* ]] && kill -l "${arg#-}" &> /dev/null && continue  # a signal: -9, -FPE, -PIPE
+  if [[ $arg =~ ^-[^-]*[pF] || $arg =~ ^--(pid|pidfile)(=|$) ]]; then explicit=1
+  elif [[ $arg =~ ^-[^-]*v || $arg =~ ^--inverse$ ]]; then invert=1
+  elif [[ $arg =~ ^-[^-]*w || $arg =~ ^--lightweight$ ]]; then threads=1
+  fi
+done
+
+read -r own_cg < "/proc/$root/cgroup" || exec "$real" "$@"
+own_cg=${own_cg#0::}
+if [[ $name == pkill ]]; then
+  if [[ $invert ]]; then
+    echo "pkill: refused: -v signals every process that does not match, which is nearly everything the user runs. Kill specific PIDs instead." >&2
+    note refused - "$name $*"
+    exit 2
+  fi
+  [[ $explicit ]] && exec "$real" "$@"                    # PIDs named on purpose
+  [[ $threads ]] && exec "$real" --cgroup "$own_cg" "$@"
+else
+  [[ $explicit || $invert || $threads ]] && exec "$real" "$@"
+fi
+
+# Walk up from our parent to the harness, collecting this tool call's
+# shells (and any xargs, timeout or nested bash -c between them and us).
+own=()
+pid=$PPID
+while [[ $pid != "$root" ]]; do
+  # Reached init without meeting the harness (say, a daemon the session started
+  # runs pkill later): no tool-call shells to leave out, but (2) still holds.
+  (( pid > 1 )) || { own=(); break; }
+  own+=("$pid")
+  read -r stat < "/proc/$pid/stat" || { own=(); break; }
+  stat=${stat##*) }  # drop "pid (comm) "; comm may contain spaces or parens
+  read -r _ pid _ <<< "$stat"
+done
+printf -v own_list '%s,' "${own[@]}"
+own_list=${own_list%,}
+# pkill also never signals the harness itself (Pi, the Claude CLI): a pattern
+# like `pkill node` would otherwise end the agent's whole session. pgrep still
+# lists it.
+spare=,$own_list,
+[[ $name == pkill ]] && spare+="$root,"
+others=()
+for dir in /proc/[0-9]*; do
+  pid=${dir#/proc/}
+  # Leave out this script too: its argv holds the pattern until it execs the
+  # real tool, which then skips itself anyway.
+  [[ $pid == "$$" || $spare == *",$pid,"* ]] || others+=("$pid")
+done
+printf -v others_list '%s,' "${others[@]}"
+others_list=${others_list%,}
+
+# The caller's selection without pkill's signal options, for asking pgrep
+# what would match (pgrep can't send signals at all).
+probe=() skip= rest=
+for arg in "$@"; do
+  if [[ $rest ]]; then probe+=("$arg"); continue; fi
+  if [[ $skip ]]; then skip=; continue; fi
+  if [[ $arg =~ ^-[acefilnoxAHLQ]+$ ]]; then  # flags that take no value
+    arg=${arg//[eH]/}                         # pkill-only: --echo, --require-handler
+    [[ $arg != - ]] && probe+=("$arg")
+    continue
+  fi
+  case $arg in
+    --) rest=1; probe+=("$arg") ;;
+    --signal|--queue|-q) skip=1 ;;
+    --signal=*|--queue=*|--echo|--require-handler) ;;
+    -?*) kill -l "${arg#-}" &> /dev/null || probe+=("$arg") ;;  # drop -9, -KILL, -SIGUSR1
+    *) probe+=("$arg") ;;
+  esac
+done
+
+# (1) Would the selection have hit this call's own shells?
+if [[ $PKILL_SELF_SAFE_ID && $own_list ]] && /usr/bin/pgrep -p "$own_list" "${probe[@]}" &> /dev/null; then
+  note "$name" "${probe[*]}" "$name $*"  # the hook matches the middle field
+fi
+if [[ $name == pkill ]] && /usr/bin/pgrep -p "$root" "${probe[@]}" &> /dev/null; then
+  read -r comm < "/proc/$root/comm"
+  note harness "${probe[*]}" "$name $*" "$root ${comm:-?}"
+fi
+
+[[ $name == pkill ]] || exec "$real" -p "$others_list" "$@"
+
+# (2) Report what pkill matched outside this session; it only signals inside.
+inside=0 outside=0 groups=0 examples=()
+declare -A seen
+while read -r pid; do
+  read -r cg < "/proc/$pid/cgroup" 2> /dev/null || continue
+  cg=${cg#0::}
+  if [[ $cg == "$own_cg" ]]; then ((inside++)); continue; fi
+  ((outside++))
+  unit=${cg##*/}
+  unit=${unit:-/}  # kernel threads sit in the root cgroup
+  [[ ${seen[$unit]} ]] && continue
+  seen[$unit]=1
+  ((groups++))
+  if (( ${#examples[@]} < 6 )); then
+    read -r comm < "/proc/$pid/comm" 2> /dev/null
+    examples+=("$pid ${comm:-?} [$unit]")
+  fi
+done < <(/usr/bin/pgrep -p "$others_list" "${probe[@]}" 2> /dev/null)
+if (( outside )); then
+  printf -v list '%s, ' "${examples[@]}"
+  echo "pkill: left $outside matching processes alone because they are outside this agent's session ($groups groups, e.g. ${list%, }); signalled $inside inside it. To stop one of those, check it and kill it by PID." >&2
+  note skipped "$inside" "$name $*" "$outside" "$groups" "${list%, }"
+fi
+exec "$real" --cgroup "$own_cg" -p "$others_list" "$@"
