@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +18,10 @@ const GUARDED_TOOLS = new Set(["bash", "monitor_start"]);
 const MENTIONS_PKILL_OR_PGREP = /\bp(?:kill|grep)\b/;
 
 export default function pkillGuardExtension(pi: ExtensionAPI): void {
-	// The shim reads /proc and cgroup v2, which only Linux has.
-	if (process.platform !== "linux") return;
+	// The shim reads /proc and cgroup v2, which only Linux has, and passes
+	// pgrep/pkill `--cgroup` and `-p`, which older procps-ng lacks. There the shim
+	// would make every pkill fail, so the guard steps aside.
+	if (process.platform !== "linux" || !pgrepHasCgroupAndPid()) return;
 
 	pi.on("tool_call", (event) => {
 		if (!GUARDED_TOOLS.has(event.toolName)) return;
@@ -48,6 +51,12 @@ export default function pkillGuardExtension(pi: ExtensionAPI): void {
 		if ("structuredContent" in event) result.structuredContent = event.structuredContent;
 		return result;
 	});
+}
+
+// pgrep exits 2 for an option it doesn't know, and 0 or 1 once it has matched.
+function pgrepHasCgroupAndPid(): boolean {
+	const { status } = spawnSync("/usr/bin/pgrep", ["--cgroup", "/", "-p", "1"], { stdio: "ignore" });
+	return status === 0 || status === 1;
 }
 
 // The shim only accepts IDs it can use as a file name; Pi's contain `|`.

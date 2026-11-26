@@ -40,8 +40,9 @@ command discarded stderr with `2>/dev/null`. Matches left alone are also reporte
 
 ## Limits
 
-- Linux only, and it needs procps-ng with `--cgroup` and `-p`/`--pid`. On other
-  platforms the extension does nothing.
+- Linux only, and it needs a procps-ng `pgrep` that accepts `--cgroup` and
+  `-p`/`--pid`. Older ones, such as on GitHub's Ubuntu runners, don't. Where
+  either is missing, the extension does nothing.
 - `sudo pkill`, `killall`, and `kill $(pgrep -f <loose pattern>)` aimed at other
   processes are not limited. `pgrep` can't tell that its output is about to be
   killed.

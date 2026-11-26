@@ -13,6 +13,10 @@ import pkillGuardExtension from "../src/index.ts";
 // tool, with the pattern always a random token so nothing else can match.
 
 const realRuntimeDir = process.env.XDG_RUNTIME_DIR;
+// The guard needs a pgrep with --cgroup and -p; elsewhere it does nothing.
+const canGuard =
+	process.platform === "linux" &&
+	[0, 1].includes(spawnSync("/usr/bin/pgrep", ["--cgroup", "/", "-p", "1"], { stdio: "ignore" }).status ?? -1);
 const canStartOutsideSession =
 	process.platform === "linux" &&
 	spawnSync("systemd-run", ["--user", "--scope", "--quiet", "true"], { stdio: "ignore" }).status === 0;
@@ -105,7 +109,7 @@ async function runBash(command: string): Promise<string> {
 	return result.content.map((part) => part.text ?? "").join("\n");
 }
 
-describe.runIf(process.platform === "linux")("pkill and pgrep in a Pi bash call", () => {
+describe.runIf(canGuard)("pkill and pgrep in a Pi bash call", () => {
 	it("a pkill -f pattern stops its target and the rest of the command still runs", async () => {
 		const inside = startInside();
 
