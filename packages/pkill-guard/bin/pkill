@@ -41,6 +41,7 @@ note() {  # fields joined by tabs; the first names the kind of note
 explicit= invert= threads=
 for arg in "$@"; do
   [[ $arg == -- ]] && break
+  [[ $arg =~ ^(-V|--version|-h|--help)$ ]] && exec "$real" "$@"  # matches nothing
   [[ $arg == -[!-]* ]] && kill -l "${arg#-}" &> /dev/null && continue  # a signal: -9, -FPE, -PIPE
   if [[ $arg =~ ^-[^-]*[pF] || $arg =~ ^--(pid|pidfile)(=|$) ]]; then explicit=1
   elif [[ $arg =~ ^-[^-]*v || $arg =~ ^--inverse$ ]]; then invert=1
@@ -143,7 +144,10 @@ while read -r pid; do
 done < <(/usr/bin/pgrep -p "$others_list" "${probe[@]}" 2> /dev/null)
 if (( outside )); then
   printf -v list '%s, ' "${examples[@]}"
-  echo "pkill: left $outside matching processes alone because they are outside this agent's session ($groups groups, e.g. ${list%, }); signalled $inside inside it. To stop one of those, check it and kill it by PID." >&2
+  procs=processes groups_word=groups
+  (( outside == 1 )) && procs=process
+  (( groups == 1 )) && groups_word=group
+  echo "pkill: left $outside matching $procs alone because they are outside this agent's session ($groups $groups_word, e.g. ${list%, }); signalled $inside inside it. To stop one of those, check it and kill it by PID." >&2
   note skipped "$inside" "$name $*" "$outside" "$groups" "${list%, }"
 fi
 exec "$real" --cgroup "$own_cg" -p "$others_list" "$@"

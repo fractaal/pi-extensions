@@ -146,6 +146,13 @@ describe.runIf(process.platform === "linux")("pkill and pgrep in a Pi bash call"
 		}
 	});
 
+	it("pgrep -V prints its version and is not reported as a match", async () => {
+		const output = await runBash("pgrep -V");
+
+		expect(output).toContain("procps");
+		expect(output).not.toContain("also matched");
+	});
+
 	it("pkill -v is refused", async () => {
 		// Signal 0 only checks that processes exist, so this is harmless either way.
 		const output = await runBash(`pkill -0 -v -f ${token}; echo "rc=$?"`);
