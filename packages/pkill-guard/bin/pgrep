@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# npm leaves symlinks out of packages, so pgrep forwards to the shared shim.
+PKILL_SELF_SAFE_AS=pgrep exec "${BASH_SOURCE[0]%/*}/pkill" "$@"

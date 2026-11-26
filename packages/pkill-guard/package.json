@@ -1,0 +1,39 @@
+{
+  "name": "@fractaal/pi-pkill-guard",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Keeps an agent's pkill and pgrep patterns from matching the shell running them, and keeps pkill from reaching processes outside the agent's own session.",
+  "keywords": ["pi-package", "pi-extension", "pkill", "pgrep", "safety"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fractaal/pi-extensions.git",
+    "directory": "packages/pkill-guard"
+  },
+  "homepage": "https://github.com/fractaal/pi-extensions/tree/main/packages/pkill-guard#readme",
+  "bugs": {
+    "url": "https://github.com/fractaal/pi-extensions/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["bin", "dist", "src", "README.md", "LICENSE"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
